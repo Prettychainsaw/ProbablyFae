@@ -1,4 +1,3 @@
 @echo off
 setlocal
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
-pause
+start "ProbablyFae Setup" /wait powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"

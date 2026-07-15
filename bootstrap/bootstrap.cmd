@@ -1,4 +1,3 @@
 @echo off
 setlocal
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0bootstrap.ps1"
-pause
+start "ProbablyFae Bootstrap" /wait powershell.exe -NoExit -NoProfile -ExecutionPolicy Bypass -File "%~dp0bootstrap.ps1"
