@@ -79,14 +79,14 @@ function Read-SecretPlainText($prompt) {
 }
 
 function Get-OllamaExe {
-  $cmd = Get-Command ollama.exe -ErrorAction SilentlyContinue
-  if ($cmd) { return $cmd.Source }
+  $cmd = Get-Command ollama.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($cmd) { return [string]$cmd.Source }
 
   $default = Join-Path $env:LOCALAPPDATA "Programs\Ollama\ollama.exe"
-  if (Test-Path $default) { return $default }
+  if (Test-Path $default) { return [string]$default }
 
   $machine = "C:\Program Files\Ollama\ollama.exe"
-  if (Test-Path $machine) { return $machine }
+  if (Test-Path $machine) { return [string]$machine }
 
   return $null
 }
@@ -106,7 +106,7 @@ function Ensure-Node {
 
   Invoke-VisibleCommand `
     "Installing Node.js LTS" `
-    "winget install --id OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements"
+    "winget install --id OpenJS.NodeJS.LTS --source winget --accept-package-agreements --accept-source-agreements" | Out-Null
   if (-not (Get-Command node.exe -ErrorAction SilentlyContinue)) {
     throw "Node.js was installed, but this PowerShell session cannot see it yet. Open a new terminal and run the installer again."
   }
@@ -128,12 +128,30 @@ function Ensure-Ollama {
 
   Invoke-VisibleCommand `
     "Installing Ollama" `
-    "winget install --id Ollama.Ollama --accept-package-agreements --accept-source-agreements"
+    "winget install --id Ollama.Ollama --source winget --accept-package-agreements --accept-source-agreements" | Out-Null
   $ollama = Get-OllamaExe
   if (-not $ollama) {
     throw "Ollama was installed, but this PowerShell session cannot find it yet. Open a new terminal and run the installer again."
   }
-  return $ollama
+  return [string]$ollama
+}
+
+function Resolve-OllamaPath($value) {
+  $candidates = @($value) | ForEach-Object {
+    [string]$_ -split '\r?\n'
+  } | ForEach-Object {
+    $_.Trim().Trim("'`"")
+  } | Where-Object {
+    $_ -and $_.ToLower().EndsWith("ollama.exe") -and (Test-Path $_)
+  }
+
+  $path = $candidates | Select-Object -Last 1
+  if ($path) { return [string]$path }
+
+  $path = Get-OllamaExe
+  if ($path) { return [string]$path }
+
+  throw "Could not find a usable ollama.exe path after install."
 }
 
 function Select-BotName {
@@ -679,6 +697,7 @@ Wonder
 }
 
 function Select-Model($ollama) {
+  $ollama = Resolve-OllamaPath $ollama
   Write-Step "Model selection"
   Show-InputHelp `
     "Ollama model choice" `
@@ -717,7 +736,7 @@ function Select-Model($ollama) {
       $safeModel = Escape-PowerShellSingleQuoted $model
       Invoke-VisibleCommand `
         "Downloading Ollama model $model" `
-        "& '$safeOllama' pull '$safeModel'"
+        "& '$safeOllama' pull '$safeModel'" | Out-Null
     }
   }
 
