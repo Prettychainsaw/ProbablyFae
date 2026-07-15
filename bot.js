@@ -68,6 +68,7 @@ let taskQueue = [];
 let taskRunning = false;
 let killSwitchActive = false;
 const activeAbortControllers = new Set();
+const activeSourceMessageIds = new Set();
 
 const SYSTEM_PROMPT = `
 You are ${BOT_NAME} in a Discord collab space.
@@ -245,6 +246,19 @@ function readJsonlTail(file, maxLines = 20) {
     .filter(Boolean);
 }
 
+function hasOutboxReplyTo(messageId) {
+  if (!messageId) return false;
+  return readJsonlTail(OUTBOX_LOG, 200).some((entry) => (
+    entry.replyTo === messageId
+    || entry.replyToSeenMessageId === messageId
+    || entry.sourceMessageId === messageId
+  ));
+}
+
+function messageAlreadyBeingHandledOrReplied(messageId) {
+  return activeSourceMessageIds.has(messageId) || hasOutboxReplyTo(messageId);
+}
+
 function readKillSwitchReason() {
   if (!fs.existsSync(KILL_SWITCH_FILE)) return null;
   const reason = fs.readFileSync(KILL_SWITCH_FILE, 'utf8').trim();
@@ -341,6 +355,7 @@ function isDiscussionPromptWindow(date = new Date()) {
 }
 
 function markMessageHandled(messageId) {
+  activeSourceMessageIds.add(messageId);
   const state = readState();
   mergeHandledMessageIds(state, messageId);
   writeState(state);
@@ -3331,6 +3346,20 @@ async function scheduledCheck(channel) {
     .find((message) => directlyAddressesFaye(message));
 
   if (directAddressMessage) {
+    if (messageAlreadyBeingHandledOrReplied(directAddressMessage.id)) {
+      logJsonl(ACTIVITY_LOG, {
+        kind: 'scheduled_direct_address_skipped_already_replied',
+        channelId: channel.id,
+        messageId: directAddressMessage.id,
+      });
+      consoleScheduled('skipped scheduled direct address already replied', {
+        channel: channel.id,
+        message: shortContent(directAddressMessage.content),
+      });
+      writeState(state);
+      return;
+    }
+    activeSourceMessageIds.add(directAddressMessage.id);
     const trigger = mentionsFayeUser(directAddressMessage)
       ? '@mention from scheduled check'
       : mentionsFayeTriggerRole(directAddressMessage)
@@ -3379,6 +3408,16 @@ async function scheduledCheck(channel) {
     .find((entry) => entry.tasks.length > 0);
 
   if (pulseMessage) {
+    if (messageAlreadyBeingHandledOrReplied(pulseMessage.message.id)) {
+      logJsonl(ACTIVITY_LOG, {
+        kind: 'scheduled_pulse_skipped_already_handled',
+        channelId: channel.id,
+        messageId: pulseMessage.message.id,
+      });
+      writeState(state);
+      return;
+    }
+    activeSourceMessageIds.add(pulseMessage.message.id);
     startPulseReadingPlan(pulseMessage.plan, channel.id, displayName(pulseMessage.message), pulseMessage.message.id);
     const text = `Pulse reading started for ${pulseMessage.plan.seriesTitle || pulseMessage.plan.relativePath}. On each scheduled pulse, I will read Chapter ${pulseMessage.plan.nextChapter} and then advance one chapter after I post.`;
     const sent = await channel.send(text.slice(0, 1900));
@@ -3405,6 +3444,16 @@ async function scheduledCheck(channel) {
   }
 
   if (taskMessage) {
+    if (messageAlreadyBeingHandledOrReplied(taskMessage.message.id)) {
+      logJsonl(ACTIVITY_LOG, {
+        kind: 'scheduled_task_skipped_already_handled',
+        channelId: channel.id,
+        messageId: taskMessage.message.id,
+      });
+      writeState(state);
+      return;
+    }
+    activeSourceMessageIds.add(taskMessage.message.id);
     const queuedTasks = taskMessage.tasks
       .map((task) => enqueueTask(
         task,
@@ -3438,6 +3487,16 @@ async function scheduledCheck(channel) {
   }
 
   if (statusMessage) {
+    if (messageAlreadyBeingHandledOrReplied(statusMessage.id)) {
+      logJsonl(ACTIVITY_LOG, {
+        kind: 'scheduled_status_skipped_already_handled',
+        channelId: channel.id,
+        messageId: statusMessage.id,
+      });
+      writeState(state);
+      return;
+    }
+    activeSourceMessageIds.add(statusMessage.id);
     const text = operationalStatusReply(channel);
     const sent = await channel.send(text.slice(0, 1900));
     state.postFollowupChecksRemaining = 2;
@@ -3460,6 +3519,20 @@ async function scheduledCheck(channel) {
   }
 
   if (deterministicMessage) {
+    if (messageAlreadyBeingHandledOrReplied(deterministicMessage.message.id)) {
+      logJsonl(ACTIVITY_LOG, {
+        kind: 'scheduled_deterministic_skipped_already_handled',
+        channelId: channel.id,
+        messageId: deterministicMessage.message.id,
+      });
+      consoleScheduled('skipped deterministic reply already handled', {
+        channel: channel.id,
+        message: shortContent(deterministicMessage.message.content),
+      });
+      writeState(state);
+      return;
+    }
+    activeSourceMessageIds.add(deterministicMessage.message.id);
     const sent = await channel.send(deterministicMessage.reply.slice(0, 1900));
     state.postFollowupChecksRemaining = 2;
     recordFayePost(state, channelState, sent, {
