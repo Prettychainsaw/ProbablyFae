@@ -19,6 +19,48 @@ function Show-InputHelp($title, $help, $url = "") {
   }
 }
 
+function Escape-PowerShellSingleQuoted($value) {
+  return [string]$value -replace "'", "''"
+}
+
+function Invoke-VisibleCommand($title, $command) {
+  $safeTitle = Escape-PowerShellSingleQuoted $title
+  $safeCommandForDisplay = Escape-PowerShellSingleQuoted $command
+  $scriptPath = Join-Path $env:TEMP ("ProbablyFae-visible-command-" + [guid]::NewGuid().ToString("N") + ".ps1")
+  $script = @"
+`$Host.UI.RawUI.WindowTitle = '$safeTitle'
+Write-Host '$safeTitle' -ForegroundColor Cyan
+Write-Host 'Command: $safeCommandForDisplay'
+Write-Host ''
+$command
+`$code = if (`$LASTEXITCODE -ne `$null) { `$LASTEXITCODE } else { 0 }
+if (`$code -ne 0) {
+  Write-Host ''
+  Write-Host "Command failed with exit code `$code." -ForegroundColor Red
+  Read-Host "Press Enter to close this window"
+  exit `$code
+}
+Write-Host ''
+Write-Host 'Finished. This window will close in 3 seconds.' -ForegroundColor Green
+Start-Sleep -Seconds 3
+exit 0
+"@
+
+  Set-Content -Path $scriptPath -Value $script -Encoding UTF8
+  try {
+    $process = Start-Process -FilePath "powershell.exe" `
+      -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $scriptPath) `
+      -WindowStyle Normal `
+      -Wait `
+      -PassThru
+    if ($process.ExitCode -ne 0) {
+      throw "$title failed with exit code $($process.ExitCode)."
+    }
+  } finally {
+    Remove-Item $scriptPath -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Read-Required($prompt) {
   do {
     $value = Read-Host $prompt
@@ -62,7 +104,9 @@ function Ensure-Node {
     throw "Node.js is required. Install Node.js LTS and run this installer again."
   }
 
-  winget install --id OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
+  Invoke-VisibleCommand `
+    "Installing Node.js LTS" `
+    "winget install --id OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements"
   if (-not (Get-Command node.exe -ErrorAction SilentlyContinue)) {
     throw "Node.js was installed, but this PowerShell session cannot see it yet. Open a new terminal and run the installer again."
   }
@@ -82,7 +126,9 @@ function Ensure-Ollama {
     throw "Ollama is required for local replies. Install Ollama and run this installer again."
   }
 
-  winget install --id Ollama.Ollama --accept-package-agreements --accept-source-agreements
+  Invoke-VisibleCommand `
+    "Installing Ollama" `
+    "winget install --id Ollama.Ollama --accept-package-agreements --accept-source-agreements"
   $ollama = Get-OllamaExe
   if (-not $ollama) {
     throw "Ollama was installed, but this PowerShell session cannot find it yet. Open a new terminal and run the installer again."
@@ -667,8 +713,11 @@ function Select-Model($ollama) {
       "https://ollama.com/search"
     $answer = Read-Host "Pull $model now? This can take a while. (Y/n)"
     if ($answer -notmatch '^(n|no)$') {
-      & $ollama pull $model
-      if ($LASTEXITCODE -ne 0) { throw "Failed to pull Ollama model $model." }
+      $safeOllama = Escape-PowerShellSingleQuoted $ollama
+      $safeModel = Escape-PowerShellSingleQuoted $model
+      Invoke-VisibleCommand `
+        "Downloading Ollama model $model" `
+        "& '$safeOllama' pull '$safeModel'"
     }
   }
 
