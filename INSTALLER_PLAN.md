@@ -109,7 +109,8 @@ Canonical GitHub repository:
 
 - `https://github.com/Prettychainsaw/ProbablyFae`
 
-The runtime control app should use this repository as the default update source.
+The installer should live in this repository. The runtime control app should use
+this repository as the default update source for bot code and installer updates.
 
 Recommended release/update layout:
 
@@ -119,6 +120,24 @@ Recommended release/update layout:
 - A stable branch for tested releases.
 
 The update checker should show what changed and require user approval before applying updates. It should not silently replace bot code.
+
+The runtime control app should expose two separate update checks:
+
+1. Bot/app updates
+   - checks `Prettychainsaw/ProbablyFae`
+   - looks for new installer/runtime releases
+   - shows release notes and migration warnings
+   - applies only after user approval
+
+2. Chat model updates
+   - checks local Ollama availability
+   - lists installed local models
+   - checks current recommended model list from the repo/update manifest
+   - optionally checks Ollama/library availability for newer recommended models
+   - offers install/pull of recommended models after user approval
+
+These should be separate buttons or clearly separate sections. A user may want
+new bot code without changing models, or a new model without changing bot code.
 
 ## Discord Setup
 
