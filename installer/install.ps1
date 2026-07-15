@@ -74,7 +74,7 @@ function Ensure-Ollama {
 
 function Select-BotName {
   $adjectives = @("Moth", "Ash", "Velvet", "Static", "Wicked", "Moon", "Thorn", "Vesper", "Hex", "Sable")
-  $nouns = @("Fae", "Mara", "Lark", "Nyx", "Vex", "Rune", "Iris", "Luna", "Faye", "Mina")
+  $nouns = @("Fae", "Mara", "Lark", "Nyx", "Vex", "Rune", "Iris", "Luna", "Mina", "Echo")
 
   while ($true) {
     $choices = 1..3 | ForEach-Object {
@@ -129,10 +129,12 @@ function Select-Model($ollama) {
 }
 
 Write-Host "ProbablyFae alpha installer 0.0.1" -ForegroundColor Green
-Write-Host "This installer sets up the current prototype. It is still Faye-shaped internally."
+Write-Host "This installer sets up a local Discord bot prototype."
 
 Write-Step "Choose identity"
 $botName = Select-BotName
+$botSlug = ($botName.ToLower() -replace '[^a-z0-9]+', '-' -replace '^-+|-+$', '')
+if ([string]::IsNullOrWhiteSpace($botSlug)) { $botSlug = "bot" }
 $personality = Read-Host "Starting personality, one paragraph"
 if ([string]::IsNullOrWhiteSpace($personality)) {
   $personality = "A sharp, playful local Discord bot with a tendency to tease and a bias toward honest answers."
@@ -177,31 +179,33 @@ New-Item -ItemType Directory -Force -Path `
   (Join-Path $installDir "knowledge\personality-reverts") | Out-Null
 
 $personalityText = @"
-# Faye Personality
+# $botName Personality
 
 Installed bot display name: $botName
 
 $personality
 "@
 
-Set-Content -Path (Join-Path $installDir "knowledge\notes\faye-personality.md") -Value $personalityText -Encoding UTF8
-Set-Content -Path (Join-Path $installDir "knowledge\notes\faye-notes.md") -Value "# Faye Notes`r`n`r`n" -Encoding UTF8
-Set-Content -Path (Join-Path $installDir "knowledge\notes\faye-mental-state.md") -Value "# Faye Mental State`r`n`r`n" -Encoding UTF8
+Set-Content -Path (Join-Path $installDir "knowledge\notes\$botSlug-personality.md") -Value $personalityText -Encoding UTF8
+Set-Content -Path (Join-Path $installDir "knowledge\notes\$botSlug-notes.md") -Value "# $botName Notes`r`n`r`n" -Encoding UTF8
+Set-Content -Path (Join-Path $installDir "knowledge\notes\$botSlug-mental-state.md") -Value "# $botName Mental State`r`n`r`n" -Encoding UTF8
 
 $envText = @"
 DISCORD_TOKEN=$discordToken
 DISCORD_CHANNEL_IDS=$channelIds
-FAYE_TRIGGER_ROLE_IDS=$triggerRoles
-FAYE_MODEL=$model
+BOT_TRIGGER_ROLE_IDS=$triggerRoles
+BOT_MODEL=$model
 BOT_NAME=$botName
-FAYE_WEB_SEARCH=1
+BOT_SLUG=$botSlug
+BOT_ALIASES=$botName,$botSlug
+BOT_WEB_SEARCH=1
 "@
 Set-Content -Path (Join-Path $installDir ".env") -Value $envText -Encoding UTF8
 
 $startCmd = @"
 @echo off
 cd /d "%~dp0"
-node bot.js >> faye-runtime.log 2>> faye-runtime.err.log
+node bot.js >> bot-runtime.log 2>> bot-runtime.err.log
 "@
 Set-Content -Path (Join-Path $installDir "START_BOT.cmd") -Value $startCmd -Encoding ASCII
 

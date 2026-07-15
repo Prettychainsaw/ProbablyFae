@@ -2,8 +2,8 @@
 
 Experimental local Discord companion bot.
 
-This repository currently contains the working Faye prototype and planning notes
-for a future installer/runtime control app.
+This repository currently contains the working local Discord companion prototype
+and planning notes for a future installer/runtime control app.
 
 Current goals:
 
@@ -46,6 +46,6 @@ The generated file is:
 dist\ProbablyFae-Setup.exe
 ```
 
-This is still an alpha installer. It installs the current Faye-shaped prototype,
+This is still an alpha installer. It installs the current generic bot prototype,
 prompts for Discord/Ollama settings, creates local shortcuts, and opens the
 Discord bot invite URL if a client ID is provided.

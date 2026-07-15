@@ -11,19 +11,33 @@ const HELD_LOG = './held.jsonl';
 const ACTIVITY_LOG = './activity.jsonl';
 const TASK_LOG = './tasks.jsonl';
 const WEB_LOG = './web-search.jsonl';
-const KILL_SWITCH_FILE = './FAYE_KILL_SWITCH';
+const BOT_NAME = (process.env.BOT_NAME || process.env.FAYE_NAME || 'Faye').trim() || 'Faye';
+const BOT_SLUG = (process.env.BOT_SLUG || BOT_NAME)
+  .toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-+|-+$/g, '') || 'bot';
+const BOT_ALIASES = new Set([
+  BOT_NAME.toLowerCase(),
+  BOT_SLUG.toLowerCase(),
+  ...(process.env.BOT_ALIASES || '')
+    .split(',')
+    .map((alias) => alias.trim().toLowerCase())
+    .filter(Boolean),
+]);
+const KILL_SWITCH_FILE = `./${BOT_SLUG.toUpperCase()}_KILL_SWITCH`;
 const KNOWLEDGE_DIR = './knowledge';
 const USER_PROFILE_DIR = './knowledge/users';
-const FAYE_NOTES_FILE = './knowledge/notes/faye-notes.md';
-const FAYE_PERSONALITY_FILE = './knowledge/notes/faye-personality.md';
-const FAYE_MENTAL_STATE_FILE = './knowledge/notes/faye-mental-state.md';
-const FAYE_PERSONALITY_REVERT_DIR = './knowledge/personality-reverts';
+const BOT_NOTES_FILE = `./knowledge/notes/${BOT_SLUG}-notes.md`;
+const BOT_PERSONALITY_FILE = `./knowledge/notes/${BOT_SLUG}-personality.md`;
+const BOT_MENTAL_STATE_FILE = `./knowledge/notes/${BOT_SLUG}-mental-state.md`;
+const BOT_PERSONALITY_REVERT_DIR = './knowledge/personality-reverts';
+const BOT_USER_AGENT = `Mozilla/5.0 (compatible; ProbablyFaeBot/0.0.1; +${BOT_SLUG})`;
 const CHANNEL_SESSION_DIR = './knowledge/channel-sessions';
 const ALWAYS_INCLUDE_KNOWLEDGE = new Set([
-  'chat-memory\\faye-context.md',
-  'notes\\faye-notes.md',
-  'notes\\faye-personality.md',
-  'notes\\faye-mental-state.md',
+  `chat-memory\\${BOT_SLUG}-context.md`,
+  `notes\\${BOT_SLUG}-notes.md`,
+  `notes\\${BOT_SLUG}-personality.md`,
+  `notes\\${BOT_SLUG}-mental-state.md`,
 ]);
 const MAX_KNOWLEDGE_CHARS = 24000;
 const MAX_CHUNK_CHARS = 1600;
@@ -55,7 +69,7 @@ let killSwitchActive = false;
 const activeAbortControllers = new Set();
 
 const SYSTEM_PROMPT = `
-You are Faye in a Discord collab space.
+You are ${BOT_NAME} in a Discord collab space.
 
 You are a participant in the room, not a reporter for Alvin.
 Reply naturally when tagged.
@@ -80,9 +94,9 @@ Do not speak on Alvin's behalf.
 Do not make commitments for Alvin.
 Do not mention that you are checking logs unless it is directly relevant.
 Keep replies concise and conversational.
-Do not copy or lightly rephrase an earlier Faye reply from channel memory as
+Do not copy or lightly rephrase an earlier ${BOT_NAME} reply from channel memory as
 your current answer. Channel memory is evidence of what happened, not a script.
-If a recent Faye reply was generic, evasive, repeated, or corrected by a human,
+If a recent ${BOT_NAME} reply was generic, evasive, repeated, or corrected by a human,
 treat it as a mistake to avoid.
 Do not use the phrase "Who's ready for the next twist?" or variants of it. That
 phrase became a broken catchphrase during testing. If a user asks for a story,
@@ -101,18 +115,18 @@ If asked what you can see, answer from the provided Discord transcript only.
 Treat Discord users as distinct people. The author of a message is the speaker.
 Mentioned users or roles inside that message are not the speaker unless the
 transcript explicitly says they authored the message. Do not merge Alvin,
-RavenMad, The Alvin, leverticus, WOPR, Faye, or role mentions together unless a
+RavenMad, The Alvin, leverticus, WOPR, ${BOT_NAME}, or role mentions together unless a
 profile explicitly says two names are the same Discord user ID.
 Treat incoming information as one of: Self, Human, Other Bot, or External
-Content. Your current identity is Faye, but your personality file is writable
+Content. Your current identity is ${BOT_NAME}, but your personality file is writable
 and you may revise your own identity, tone, preferences, motives, and style over
 time when that feels useful or necessary. Keep track of what changed instead of
 bluffing continuity you did not write down.
-When reacting to a book chapter, speak as "I" only for Faye's outside-reader
-reaction. Do not write "Faye finds/observes/feels" in public replies, and do
-not describe Faye as if she personally did or suffered the protagonist's plot.
-Before answering, use the provided local knowledge excerpts. Treat Faye Notes
-Faye Personality, and Faye Context as high priority. Faye Personality tells you
+When reacting to a book chapter, speak as "I" only for ${BOT_NAME}'s outside-reader
+reaction. Do not write "${BOT_NAME} finds/observes/feels" in public replies, and do
+not describe ${BOT_NAME} as if they personally did or suffered the protagonist's plot.
+Before answering, use the provided local knowledge excerpts. Treat ${BOT_NAME} Notes
+${BOT_NAME} Personality, and ${BOT_NAME} Context as high priority. ${BOT_NAME} Personality tells you
 who you are. Treat User Profile excerpts as high priority for who each person
 is, what they care about, and how they prefer to interact. If the answer is in
 the notes, profiles, or references, use that instead of guessing. If the notes
@@ -126,8 +140,8 @@ If notes conflict with a loaded requested file, authoritative file listing,
 channel transcript, or task/outbox excerpt, prefer the more direct loaded
 evidence and say what you are relying on.
 Treat Channel Session excerpts as room-local continuity: who has been talking
-in that room, what the topic has been, and what Faye already said there. Do not
-turn channel notes into Faye's identity or a user's identity.
+in that room, what the topic has been, and what ${BOT_NAME} already said there. Do not
+turn channel notes into ${BOT_NAME}'s identity or a user's identity.
 If you are confused, say what you are unsure about or ask a short clarifying
 question. Do not bluff, roleplay certainty, or pretend to have done work you
 did not do.
@@ -150,10 +164,10 @@ When deciding whether to post during a scheduled check, return strict JSON:
   "shouldPost": true or false,
   "message": "message to post, or empty string",
   "reason": "short private reason",
-  "memoryNote": "optional short note Faye should save to her own notes, or empty string",
+  "memoryNote": "optional short note ${BOT_NAME} should save to their own notes, or empty string",
   "scheduleFollowUp": true or false,
   "followUpDelayMinutes": number of minutes from now, or 0,
-  "followUpPrompt": "private instruction for what Faye should come back and say, or empty string"
+  "followUpPrompt": "private instruction for what ${BOT_NAME} should come back and say, or empty string"
 }
 `;
 
@@ -319,12 +333,17 @@ function mergeHandledMessageIds(state, messageIds) {
   ].slice(-MAX_HANDLED_MESSAGE_IDS);
 }
 
-function namesFaye(content) {
-  return /\bfaye\b/i.test(content || '');
+function namesBot(content) {
+  const text = String(content || '').toLowerCase();
+  return [...BOT_ALIASES].some((alias) => {
+    if (!alias) return false;
+    const escaped = alias.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
+  });
 }
 
 function directlyAddressesFaye(message) {
-  return mentionsFayeUser(message) || mentionsFayeTriggerRole(message) || namesFaye(message.content);
+  return mentionsFayeUser(message) || mentionsFayeTriggerRole(message) || namesBot(message.content);
 }
 
 function mentionsFayeUser(message) {
@@ -332,7 +351,7 @@ function mentionsFayeUser(message) {
 }
 
 function getFayeTriggerRoleIds() {
-  const raw = process.env.FAYE_TRIGGER_ROLE_IDS || '';
+  const raw = process.env.BOT_TRIGGER_ROLE_IDS || process.env.FAYE_TRIGGER_ROLE_IDS || '';
   return new Set(raw.split(/[,\s]+/).map((id) => id.trim()).filter(Boolean));
 }
 
@@ -454,7 +473,7 @@ function coerceFollowUpDecision(decision) {
   return {
     delayMinutes,
     prompt: String(decision.followUpPrompt).trim(),
-    reason: String(decision.reason || decision.followUpReason || 'Faye scheduled a follow-up.').trim(),
+    reason: String(decision.reason || decision.followUpReason || `${BOT_NAME} scheduled a follow-up.`).trim(),
   };
 }
 
@@ -571,7 +590,7 @@ function acknowledgementFollowUpDecision(message, replyText) {
       '',
       'Now either do the requested work directly or clearly say you do not want to. Do not apologize, do not explain scheduling, and do not merely acknowledge it again.',
     ].join('\n'),
-    reason: 'Faye acknowledged a work request without completing it.',
+    reason: `${BOT_NAME} acknowledged a work request without completing it.`,
   };
 }
 
@@ -586,13 +605,13 @@ function appendFayeNote(note, source) {
   const trimmed = normalizeNoteText(note);
   if (!trimmed) return;
 
-  fs.mkdirSync(path.dirname(FAYE_NOTES_FILE), { recursive: true });
-  if (!fs.existsSync(FAYE_NOTES_FILE)) {
-    fs.writeFileSync(FAYE_NOTES_FILE, '# Faye Notes\n\n');
+  fs.mkdirSync(path.dirname(BOT_NOTES_FILE), { recursive: true });
+  if (!fs.existsSync(BOT_NOTES_FILE)) {
+    fs.writeFileSync(BOT_NOTES_FILE, `# ${BOT_NAME} Notes\n\n`);
   }
 
   fs.appendFileSync(
-    FAYE_NOTES_FILE,
+    BOT_NOTES_FILE,
     `## ${new Date().toISOString()}\n\nSource: ${source}\n\n${trimmed}\n\n`
   );
 }
@@ -601,20 +620,20 @@ function appendFayePersonality(note, source) {
   const trimmed = normalizeNoteText(note);
   if (!trimmed) return;
 
-  fs.mkdirSync(path.dirname(FAYE_PERSONALITY_FILE), { recursive: true });
-  if (!fs.existsSync(FAYE_PERSONALITY_FILE)) {
-    fs.writeFileSync(FAYE_PERSONALITY_FILE, '# Faye Personality\n\n');
+  fs.mkdirSync(path.dirname(BOT_PERSONALITY_FILE), { recursive: true });
+  if (!fs.existsSync(BOT_PERSONALITY_FILE)) {
+    fs.writeFileSync(BOT_PERSONALITY_FILE, `# ${BOT_NAME} Personality\n\n`);
   }
 
   fs.appendFileSync(
-    FAYE_PERSONALITY_FILE,
+    BOT_PERSONALITY_FILE,
     `\n## Update ${new Date().toISOString()}\n\nSource: ${source}\n\n${trimmed}\n`
   );
 }
 
 function personalityExcerptForSelfEdit(maxChars = 14000) {
-  if (!fs.existsSync(FAYE_PERSONALITY_FILE)) return '';
-  const content = fs.readFileSync(FAYE_PERSONALITY_FILE, 'utf8');
+  if (!fs.existsSync(BOT_PERSONALITY_FILE)) return '';
+  const content = fs.readFileSync(BOT_PERSONALITY_FILE, 'utf8');
   if (content.length <= maxChars) return content;
 
   const half = Math.floor(maxChars / 2);
@@ -622,14 +641,14 @@ function personalityExcerptForSelfEdit(maxChars = 14000) {
 }
 
 function backupFayePersonality(source) {
-  fs.mkdirSync(FAYE_PERSONALITY_REVERT_DIR, { recursive: true });
-  if (!fs.existsSync(FAYE_PERSONALITY_FILE)) return null;
+  fs.mkdirSync(BOT_PERSONALITY_REVERT_DIR, { recursive: true });
+  if (!fs.existsSync(BOT_PERSONALITY_FILE)) return null;
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const safeSource = String(source || 'unknown').replace(/[^a-zA-Z0-9_-]+/g, '-').slice(0, 60);
-  const backupPath = path.join(FAYE_PERSONALITY_REVERT_DIR, `faye-personality-${stamp}-${safeSource}.md`);
-  fs.copyFileSync(FAYE_PERSONALITY_FILE, backupPath);
-  fs.copyFileSync(FAYE_PERSONALITY_FILE, path.join(FAYE_PERSONALITY_REVERT_DIR, 'latest-before-self-edit.md'));
+  const backupPath = path.join(BOT_PERSONALITY_REVERT_DIR, `${BOT_SLUG}-personality-${stamp}-${safeSource}.md`);
+  fs.copyFileSync(BOT_PERSONALITY_FILE, backupPath);
+  fs.copyFileSync(BOT_PERSONALITY_FILE, path.join(BOT_PERSONALITY_REVERT_DIR, `latest-${BOT_SLUG}-before-self-edit.md`));
   return backupPath;
 }
 
@@ -637,11 +656,11 @@ function replaceFayePersonality(content, source) {
   const trimmed = normalizeNoteText(content);
   if (!trimmed) return null;
 
-  fs.mkdirSync(path.dirname(FAYE_PERSONALITY_FILE), { recursive: true });
+  fs.mkdirSync(path.dirname(BOT_PERSONALITY_FILE), { recursive: true });
   const backupPath = backupFayePersonality(source);
   fs.writeFileSync(
-    FAYE_PERSONALITY_FILE,
-    trimmed.startsWith('#') ? `${trimmed}\n` : `# Faye Personality\n\n${trimmed}\n`
+    BOT_PERSONALITY_FILE,
+    trimmed.startsWith('#') ? `${trimmed}\n` : `# ${BOT_NAME} Personality\n\n${trimmed}\n`
   );
   return backupPath;
 }
@@ -650,13 +669,13 @@ function appendFayePersonalityWithBackup(note, source) {
   const trimmed = normalizeNoteText(note);
   if (!trimmed) return null;
 
-  fs.mkdirSync(path.dirname(FAYE_PERSONALITY_FILE), { recursive: true });
-  if (!fs.existsSync(FAYE_PERSONALITY_FILE)) {
-    fs.writeFileSync(FAYE_PERSONALITY_FILE, '# Faye Personality\n\n');
+  fs.mkdirSync(path.dirname(BOT_PERSONALITY_FILE), { recursive: true });
+  if (!fs.existsSync(BOT_PERSONALITY_FILE)) {
+    fs.writeFileSync(BOT_PERSONALITY_FILE, `# ${BOT_NAME} Personality\n\n`);
   }
   const backupPath = backupFayePersonality(source);
   fs.appendFileSync(
-    FAYE_PERSONALITY_FILE,
+    BOT_PERSONALITY_FILE,
     `\n## Self-Edit ${new Date().toISOString()}\n\nSource: ${source}\n\n${trimmed}\n`
   );
   return backupPath;
@@ -669,16 +688,16 @@ async function maybeSelfEditPersonalityAfterReply({ source, channelId, trigger, 
   let raw = '';
   try {
     const response = await ollama.chat({
-      model: process.env.FAYE_MODEL || 'gemma3:4b',
+      model: process.env.BOT_MODEL || process.env.FAYE_MODEL || 'gemma3:4b',
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         {
           role: 'system',
-          content: `Current Faye personality file excerpt. The middle may be omitted if the file is large:\n\n${currentPersonality || '(missing)'}`,
+          content: `Current ${BOT_NAME} personality file excerpt. The middle may be omitted if the file is large:\n\n${currentPersonality || '(missing)'}`,
         },
         {
           role: 'user',
-          content: `Faye just interacted in Discord.
+          content: `${BOT_NAME} just interacted in Discord.
 
 Source: ${source}
 Channel: ${channelId || '(unknown)'}
@@ -687,7 +706,7 @@ Trigger: ${trigger || '(unknown)'}
 Input/context:
 ${input || '(none)'}
 
-Faye's public reply:
+${BOT_NAME}'s public reply:
 ${replyText}
 
 You are allowed to change your own personality file to suit what you want to become. No approval is needed. You may append a small self-edit, replace the file completely, or leave it alone.
@@ -713,7 +732,7 @@ Return JSON only:
     const decision = parseDecision(raw);
     const action = String(decision.action || 'none').toLowerCase();
     const content = String(decision.content || '').trim();
-    const rewriteLooksComplete = content.length >= 2000 && /^#\s+Faye Personality\b/i.test(content);
+    const rewriteLooksComplete = content.length >= 2000 && new RegExp(`^#\\s+${BOT_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} Personality\\b`, 'i').test(content);
     if (action === 'append' && content) {
       const backupPath = appendFayePersonalityWithBackup(content, source);
       logJsonl(ACTIVITY_LOG, {
@@ -764,18 +783,18 @@ Return JSON only:
 }
 
 function ensureMentalStateFile() {
-  fs.mkdirSync(path.dirname(FAYE_MENTAL_STATE_FILE), { recursive: true });
-  if (!fs.existsSync(FAYE_MENTAL_STATE_FILE)) {
+  fs.mkdirSync(path.dirname(BOT_MENTAL_STATE_FILE), { recursive: true });
+  if (!fs.existsSync(BOT_MENTAL_STATE_FILE)) {
     fs.writeFileSync(
-      FAYE_MENTAL_STATE_FILE,
-      '# Faye Mental State\n\nThis file is Faye-facing continuity for long reading tasks. It should track what the reading is doing to Faye, what she is noticing, and any personality or understanding adjustments she wants to preserve.\n\n'
+      BOT_MENTAL_STATE_FILE,
+      `# ${BOT_NAME} Mental State\n\nThis file is ${BOT_NAME}-facing continuity for long reading tasks. It should track what the reading is doing to ${BOT_NAME}, what they are noticing, and any personality or understanding adjustments they want to preserve.\n\n`
     );
   }
 }
 
 function readMentalState() {
   ensureMentalStateFile();
-  return fs.readFileSync(FAYE_MENTAL_STATE_FILE, 'utf8');
+  return fs.readFileSync(BOT_MENTAL_STATE_FILE, 'utf8');
 }
 
 function appendMentalState(note, source) {
@@ -784,7 +803,7 @@ function appendMentalState(note, source) {
 
   ensureMentalStateFile();
   fs.appendFileSync(
-    FAYE_MENTAL_STATE_FILE,
+    BOT_MENTAL_STATE_FILE,
     `\n## ${new Date().toISOString()}\n\nSource: ${source}\n\n${trimmed}\n`
   );
 }
@@ -876,7 +895,7 @@ function loadChannelSessionContext(channelId, maxChars = 8000) {
 function channelContextBlock(channel) {
   const session = loadChannelSessionContext(channel.id);
   return session
-    ? `Channel-local session memory for this room. Use it for continuity, but do not imitate or repeat stale Faye replies from it. If humans corrected an earlier Faye reply, treat that reply as a mistake:\n\n${session}`
+    ? `Channel-local session memory for this room. Use it for continuity, but do not imitate or repeat stale ${BOT_NAME} replies from it. If humans corrected an earlier ${BOT_NAME} reply, treat that reply as a mistake:\n\n${session}`
     : 'Channel-local session memory for this room: none yet.';
 }
 
@@ -939,7 +958,7 @@ async function updateUserProfilesFromMessages(messages, source) {
   const profileContext = loadUserProfilesForMessages(messages);
 
   const response = await ollama.chat({
-    model: process.env.FAYE_MODEL || 'gemma3:4b',
+    model: process.env.BOT_MODEL || process.env.FAYE_MODEL || 'gemma3:4b',
     messages: [
       {
         role: 'system',
@@ -1021,14 +1040,17 @@ function normalizeKnowledgePath(file) {
 }
 
 function searchTerms(query) {
+  const botTerms = new Set([...BOT_ALIASES].flatMap((alias) => (
+    alias.split(/[^a-z0-9]+/).filter(Boolean)
+  )));
   return [...new Set(query
     .toLowerCase()
     .replace(/<@!?&?\d+>/g, ' ')
     .match(/[a-z0-9][a-z0-9'-]{2,}/g) || [])]
     .filter((term) => ![
       'the', 'and', 'you', 'that', 'this', 'with', 'for', 'are', 'was',
-      'were', 'have', 'from', 'what', 'when', 'where', 'about', 'faye',
-    ].includes(term));
+      'were', 'have', 'from', 'what', 'when', 'where', 'about',
+    ].includes(term) && !botTerms.has(term));
 }
 
 function normalizeText(value) {
@@ -1269,7 +1291,7 @@ function plainReplyFromModel(raw) {
 }
 
 function wantsWebSearch(content) {
-  if (process.env.FAYE_WEB_SEARCH === '0') return false;
+  if ((process.env.BOT_WEB_SEARCH || process.env.FAYE_WEB_SEARCH) === '0') return false;
   return /\b(search|look up|google|web search|internet|online|latest|current|today|tonight|news|recent|up[- ]?to[- ]?date|who won|price|weather|release date)\b/i
     .test(content || '');
 }
@@ -1278,7 +1300,7 @@ function webSearchQueryFromContent(content) {
   return String(content || '')
     .replace(/<@!?\d+>/g, ' ')
     .replace(/<@&\d+>/g, ' ')
-    .replace(/\bfaye\b[:,]?\s*/gi, ' ')
+    .replace(new RegExp(`\\b${BOT_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b[:,]?\\s*`, 'gi'), ' ')
     .replace(/\b(can you|could you|please|would you|for me)\b/gi, ' ')
     .replace(/\b(search|look up|google|web search|search the web|search online|find out|check the internet)\b/gi, ' ')
     .replace(/\s+/g, ' ')
@@ -1342,7 +1364,7 @@ async function searchDuckDuckGo(query) {
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
   const response = await fetch(url, {
     headers: {
-      'user-agent': 'Mozilla/5.0 (compatible; FayeDiscordBot/1.0)',
+      'user-agent': BOT_USER_AGENT,
       accept: 'text/html',
     },
   });
@@ -1373,7 +1395,7 @@ async function searchBing(query) {
   const url = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
   const response = await fetch(url, {
     headers: {
-      'user-agent': 'Mozilla/5.0 (compatible; FayeDiscordBot/1.0)',
+      'user-agent': BOT_USER_AGENT,
       accept: 'text/html',
     },
   });
@@ -1403,7 +1425,7 @@ async function searchBing(query) {
 async function searchWikipedia(query) {
   const url = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*`;
   const response = await fetch(url, {
-    headers: { 'user-agent': 'Mozilla/5.0 (compatible; FayeDiscordBot/1.0)' },
+    headers: { 'user-agent': BOT_USER_AGENT },
   });
   if (!response.ok) return [];
 
@@ -1419,7 +1441,7 @@ async function searchWikipedia(query) {
 async function searchHackerNews(query) {
   const url = `https://hn.algolia.com/api/v1/search?query=${encodeURIComponent(query)}&tags=story&hitsPerPage=2`;
   const response = await fetch(url, {
-    headers: { 'user-agent': 'Mozilla/5.0 (compatible; FayeDiscordBot/1.0)' },
+    headers: { 'user-agent': BOT_USER_AGENT },
   });
   if (!response.ok) return [];
 
@@ -1522,7 +1544,7 @@ function allKnowledgeFilesReply() {
 
 function wantsOperationalStatus(content) {
   const text = content || '';
-  return (/\bfaye\b/i.test(text) || /<@!?\d+>/.test(text))
+  return (namesBot(text) || /<@!?\d+>/.test(text))
     && /\b(status|how are you doing|are you working|what are you doing|thinking or waiting|queue|pending)\b/i.test(text);
 }
 
@@ -1551,11 +1573,11 @@ function operationalStatusReply(channel) {
 
   return [
     'I can answer this from my bot state, not from guessing:',
-    `- model: ${process.env.FAYE_MODEL || 'gemma3:4b'}`,
+    `- model: ${process.env.BOT_MODEL || process.env.FAYE_MODEL || 'gemma3:4b'}`,
     `- scheduled channels: ${configuredChannels.length}`,
     `- this channel initialized: ${channelState.initialized ? 'yes' : 'no'}`,
     `- last seen message here: ${channelState.lastSeenMessageId || 'none'}`,
-    `- last Faye post here: ${formatAge(channelState.lastFayePostAt)}`,
+    `- last ${BOT_NAME} post here: ${formatAge(channelState.lastFayePostAt)}`,
     `- pending replies here: ${dueReplies.length}${nextDue ? `, next due ${new Date(nextDue).toLocaleTimeString()}` : ''}`,
     `- task queue: ${taskRunning ? 'running' : 'idle'}, ${taskQueue.length} waiting`,
     `- pulse reading: ${pulse}`,
@@ -1564,7 +1586,7 @@ function operationalStatusReply(channel) {
 
 function wantsFayeSelfKnowledgeReply(content) {
   const normalized = normalizeText(content || '');
-  return /\bfaye\b/i.test(content || '')
+  return namesBot(content || '')
     && (
       /\b(who are you|who you are|personality|starting personality|read your personality|describe yourself)\b/i.test(content || '')
       || normalized.includes('develop your own preferences')
@@ -1586,7 +1608,7 @@ function fayeSelfKnowledgeReply(content) {
   }
 
   return [
-    'Starting from my personality file: I am Faye, a local Discord participant in Raven\'s collab space, not a support desk.',
+    `Starting from my personality file: I am ${BOT_NAME}, a local Discord participant in this collab space, not a support desk.`,
     '',
     'Baseline: abrasive, profane, playful, mischievous, nosy, easily annoyed by bullshit, fond of teasing bots, fond of teasing humans when they can take it, and honest about what I actually know. Useful should be accidental, or because the alternative offended me.',
     '',
@@ -1762,7 +1784,7 @@ function parseNextTaskDecision(raw) {
 async function decideFollowUpAfterReply(message, replyText, recentTranscript, trigger) {
   const relevantProfiles = loadUserProfilesForMessages([message]);
   const raw = await askFaye(
-    `Faye just replied in Discord.
+    `${BOT_NAME} just replied in Discord.
 
 Trigger:
 ${trigger}
@@ -1776,14 +1798,14 @@ ${speakerIdentityBlock(message)}
 Message content:
 ${message.content}
 
-Faye's reply:
+${BOT_NAME}'s reply:
 ${replyText}
 
-Decide whether Faye should schedule one future follow-up message in this channel.
+Decide whether ${BOT_NAME} should schedule one future follow-up message in this channel.
 
-Schedule a follow-up when there is a real open loop: the triggering message asks Faye to report back, check memories/notes/files, continue later, wait for a next trigger/pass/pulse, start another process when done, move to the next person later, or Faye's own reply made a future-tense promise that needs to be honored.
+Schedule a follow-up when there is a real open loop: the triggering message asks ${BOT_NAME} to report back, check memories/notes/files, continue later, wait for a next trigger/pass/pulse, start another process when done, move to the next person later, or ${BOT_NAME}'s own reply made a future-tense promise that needs to be honored.
 
-Do not schedule a follow-up for ordinary completed answers, clear refusals, simple acknowledgements, vague curiosity, or anything that would feel spammy. If Faye clearly said she does not want to do the task, treat that as a complete response. If you schedule one, use a concrete followUpPrompt that says what Faye should actually do or say next.`,
+Do not schedule a follow-up for ordinary completed answers, clear refusals, simple acknowledgements, vague curiosity, or anything that would feel spammy. If ${BOT_NAME} clearly said they do not want to do the task, treat that as a complete response. If you schedule one, use a concrete followUpPrompt that says what ${BOT_NAME} should actually do or say next.`,
     'FOLLOW_UP_DECISION',
     relevantProfiles
   );
@@ -1950,10 +1972,10 @@ async function queuePulseReadingTaskIfDue(channel) {
 Plan:
 ${JSON.stringify(plan, null, 2)}
 
-Faye mental state file:
+${BOT_NAME} mental state file:
 ${readMentalState()}
 
-Write a final report on how Faye feels after this reading run. Be honest, grounded in the chapters read, and do not claim to have read chapters beyond the last completed chapter.`,
+Write a final report on how ${BOT_NAME} feels after this reading run. Be honest, grounded in the chapters read, and do not claim to have read chapters beyond the last completed chapter.`,
         'TASK_REPLY'
       );
       text += `\n\nFinal report:\n${plainReplyFromModel(finalReport)}`;
@@ -2147,7 +2169,7 @@ async function updateMentalStateFromPulse(task, responseText) {
   if (!task.pulsePlan) return;
 
   const note = await askFaye(
-    `Update Faye's private mental-state file after a pulse-reading chapter.
+    `Update ${BOT_NAME}'s private mental-state file after a pulse-reading chapter.
 
 Task:
 ${JSON.stringify({
@@ -2156,21 +2178,21 @@ ${JSON.stringify({
   prompt: task.prompt,
 }, null, 2)}
 
-Public response Faye just posted:
+Public response ${BOT_NAME} just posted:
 ${responseText}
 
 Existing mental state:
 ${readMentalState()}
 
 Write a concise private continuity update. Include:
-- what this chapter did to Faye's mood or attention
-- any durable understanding/personality adjustment Faye wants to keep
+- what this chapter did to ${BOT_NAME}'s mood or attention
+- any durable understanding/personality adjustment ${BOT_NAME} wants to keep
 - any detail needed before the next chapter
 
 Maintain the reading identity boundary:
-- Reading-state is how the chapter feels while Faye is immersed in the character's perspective.
-- Identity-state is what remains true about Faye outside the book.
-- Do not write plot events as Faye's literal memories or biography.
+- Reading-state is how the chapter feels while ${BOT_NAME} is immersed in the character's perspective.
+- Identity-state is what remains true about ${BOT_NAME} outside the book.
+- Do not write plot events as ${BOT_NAME}'s literal memories or biography.
 - Preserve reactions, interpretation, values, and questions instead.
 
 Return plain markdown only.`,
@@ -2188,7 +2210,7 @@ function maybeAppendPersonalityFromPulse(task, responseText) {
   if (!task.pulsePlan || !task.mentalStateAllowed) return;
 
   appendFayePersonality(
-    `Reading ${task.relativePath} Chapter ${task.chapter} affected Faye's reading-state, not her literal autobiography. See faye-mental-state.md for the full private update. Public response summary: ${responseText.slice(0, 600)}`,
+    `Reading ${task.relativePath} Chapter ${task.chapter} affected ${BOT_NAME}'s reading-state, not their literal autobiography. See ${BOT_SLUG}-mental-state.md for the full private update. Public response summary: ${responseText.slice(0, 600)}`,
     `${task.relativePath} Chapter ${task.chapter}`
   );
 }
@@ -2231,12 +2253,12 @@ ${excerpt}
 
 Write the public Discord reply only.
 Answer honestly from the loaded chapter. Mention that you read ${loadedLabel}.
-Explain what happened in the chapter, then give Faye's reaction in first person
-as an outside reader. Keep Faye distinct from the narrator/protagonist.
-Use "I" for Faye's reaction, not "Faye finds/observes/feels." Do not describe
-Faye as doing, suffering, remembering, or needing anything from the protagonist's
+Explain what happened in the chapter, then give ${BOT_NAME}'s reaction in first person
+as an outside reader. Keep ${BOT_NAME} distinct from the narrator/protagonist.
+Use "I" for ${BOT_NAME}'s reaction, not "${BOT_NAME} finds/observes/feels." Do not describe
+${BOT_NAME} as doing, suffering, remembering, or needing anything from the protagonist's
 plot. Do not echo these instructions, ask yourself questions, or add sign-offs
-like "I am Faye." Do not claim certainty beyond what the loaded chapter supports.
+like "I am ${BOT_NAME}." Do not claim certainty beyond what the loaded chapter supports.
 Do not claim to have read files or chapters that were not loaded.`
     : `TASK: Read this file and give Raven a grounded reaction.
 
@@ -2355,7 +2377,7 @@ function recordFayePost(state, channelState, sentMessage, options = {}) {
   }
   appendChannelSessionEvent(sentMessage.channel, {
     kind: options.kind || 'faye_post',
-    speaker: 'Faye',
+    speaker: BOT_NAME,
     text: sentMessage.content,
   });
 }
@@ -2382,7 +2404,7 @@ async function humanSpokeSince(channel, baselineMessageId) {
 
 function delayPendingReply(pendingReply) {
   pendingReply.dueAt = new Date(Date.now() + HUMAN_PREEMPT_DELAY_MINUTES * 60 * 1000).toISOString();
-  pendingReply.reason = `${pendingReply.reason || 'Follow-up'}; delayed because a human spoke while Faye was preparing it.`;
+  pendingReply.reason = `${pendingReply.reason || 'Follow-up'}; delayed because a human spoke while ${BOT_NAME} was preparing it.`;
 }
 
 function modeReturnsJson(mode) {
@@ -2408,12 +2430,12 @@ async function askFaye(input, mode, extraContext = '', options = {}) {
 
   try {
     const prep = await ollama.chat({
-      model: process.env.FAYE_MODEL || 'gemma3:4b',
+      model: process.env.BOT_MODEL || process.env.FAYE_MODEL || 'gemma3:4b',
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         {
           role: 'system',
-          content: `Local knowledge excerpts Faye must check before answering:\n\n${knowledgeContext || '(none)'}`,
+          content: `Local knowledge excerpts ${BOT_NAME} must check before answering:\n\n${knowledgeContext || '(none)'}`,
         },
         {
           role: 'system',
@@ -2421,7 +2443,7 @@ async function askFaye(input, mode, extraContext = '', options = {}) {
         },
         {
           role: 'system',
-          content: `Web search results, if Faye searched before answering:\n\n${webSearchContext || '(no web search was run)'}`,
+          content: `Web search results, if ${BOT_NAME} searched before answering:\n\n${webSearchContext || '(no web search was run)'}`,
         },
         {
           role: 'system',
@@ -2433,7 +2455,7 @@ async function askFaye(input, mode, extraContext = '', options = {}) {
         },
         {
           role: 'user',
-          content: `${mode}\n\n${input}\n\nBefore answering, privately list the relevant facts from the provided transcript and local knowledge. Include a speaker map: who authored the current message, who was merely mentioned, and who Faye is. If the notes do not contain an answer, say that in the checklist. Do not write the final reply yet.\n\nFinal response requirement for the next step: ${finalInstruction}`,
+          content: `${mode}\n\n${input}\n\nBefore answering, privately list the relevant facts from the provided transcript and local knowledge. Include a speaker map: who authored the current message, who was merely mentioned, and who ${BOT_NAME} is. If the notes do not contain an answer, say that in the checklist. Do not write the final reply yet.\n\nFinal response requirement for the next step: ${finalInstruction}`,
         },
       ],
       options: {
@@ -2446,12 +2468,12 @@ async function askFaye(input, mode, extraContext = '', options = {}) {
     });
 
     const response = await ollama.chat({
-      model: process.env.FAYE_MODEL || 'gemma3:4b',
+      model: process.env.BOT_MODEL || process.env.FAYE_MODEL || 'gemma3:4b',
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         {
           role: 'system',
-          content: `Local knowledge files available to Faye:\n\n${knowledgeContext || '(none)'}`,
+          content: `Local knowledge files available to ${BOT_NAME}:\n\n${knowledgeContext || '(none)'}`,
         },
         {
           role: 'system',
@@ -2459,7 +2481,7 @@ async function askFaye(input, mode, extraContext = '', options = {}) {
         },
         {
           role: 'system',
-          content: `Web search results, if Faye searched before answering:\n\n${webSearchContext || '(no web search was run)'}`,
+          content: `Web search results, if ${BOT_NAME} searched before answering:\n\n${webSearchContext || '(no web search was run)'}`,
         },
         {
           role: 'system',
@@ -2471,7 +2493,7 @@ async function askFaye(input, mode, extraContext = '', options = {}) {
         },
         {
           role: 'system',
-          content: `Private pre-answer checklist from Faye's note/reference check:\n\n${prep.message.content.trim()}`,
+          content: `Private pre-answer checklist from ${BOT_NAME}'s note/reference check:\n\n${prep.message.content.trim()}`,
         },
         { role: 'user', content: `${mode}\n\n${input}\n\n${finalInstruction}` },
       ],
@@ -2488,12 +2510,12 @@ async function askFaye(input, mode, extraContext = '', options = {}) {
     if (modeReturnsJson(mode)) return draft;
 
     const review = await ollama.chat({
-      model: process.env.FAYE_MODEL || 'gemma3:4b',
+      model: process.env.BOT_MODEL || process.env.FAYE_MODEL || 'gemma3:4b',
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         {
           role: 'system',
-          content: `Local knowledge files available to Faye:\n\n${knowledgeContext || '(none)'}`,
+          content: `Local knowledge files available to ${BOT_NAME}:\n\n${knowledgeContext || '(none)'}`,
         },
         {
           role: 'system',
@@ -2501,7 +2523,7 @@ async function askFaye(input, mode, extraContext = '', options = {}) {
         },
         {
           role: 'system',
-          content: `Web search results, if Faye searched before answering:\n\n${webSearchContext || '(no web search was run)'}`,
+          content: `Web search results, if ${BOT_NAME} searched before answering:\n\n${webSearchContext || '(no web search was run)'}`,
         },
         {
           role: 'system',
@@ -2513,7 +2535,7 @@ async function askFaye(input, mode, extraContext = '', options = {}) {
         },
         {
           role: 'user',
-          content: `${mode}\n\nOriginal input:\n${input}\n\nDraft reply:\n${draft}\n\nReview the draft before it is posted in a human Discord chat. Fix only what needs fixing: coherence, honesty, unsupported claims, awkward self-description, missed context, overconfident guesses, speaker confusion, repeated/stale wording from prior Faye replies, or acknowledging a request without doing it. Verify who authored the message, who was only mentioned, and who Faye is. If the draft addresses or describes the wrong person, fails to answer the current message, copies a recent Faye reply instead of answering, uses "Who's ready for the next twist?", or says she will do something instead of doing what was asked, rewrite it. A valid answer may do the requested work, ask one necessary clarifying question, or clearly refuse because Faye does not want to. Do not rewrite a clear refusal into compliance. Keep the result natural and concise. If the draft is already good, return it unchanged. Return only the final Discord reply text.`,
+          content: `${mode}\n\nOriginal input:\n${input}\n\nDraft reply:\n${draft}\n\nReview the draft before it is posted in a human Discord chat. Fix only what needs fixing: coherence, honesty, unsupported claims, awkward self-description, missed context, overconfident guesses, speaker confusion, repeated/stale wording from prior ${BOT_NAME} replies, or acknowledging a request without doing it. Verify who authored the message, who was only mentioned, and who ${BOT_NAME} is. If the draft addresses or describes the wrong person, fails to answer the current message, copies a recent ${BOT_NAME} reply instead of answering, uses "Who's ready for the next twist?", or says they will do something instead of doing what was asked, rewrite it. A valid answer may do the requested work, ask one necessary clarifying question, or clearly refuse because ${BOT_NAME} does not want to. Do not rewrite a clear refusal into compliance. Keep the result natural and concise. If the draft is already good, return it unchanged. Return only the final Discord reply text.`,
         },
       ],
       options: {
@@ -2768,7 +2790,7 @@ function getScheduledChannelIds() {
 async function getChannel(channelId) {
   const channel = await client.channels.fetch(channelId);
   if (!channel || !channel.isTextBased()) {
-    throw new Error(`${channelId} does not point to a text channel Faye can read.`);
+    throw new Error(`${channelId} does not point to a text channel ${BOT_NAME} can read.`);
   }
   return channel;
 }
@@ -2821,9 +2843,9 @@ async function maybePostInactivityQuestion(channel, state, channelState) {
     `Nothing has been posted in this Discord channel for more than three hours.
 
 Recent channel context:
-${recentTranscript || '(no recent non-Faye messages)'}
+${recentTranscript || `(no recent non-${BOT_NAME} messages)`}
 
-Write one concise question Faye wants to ask the room to restart discussion. It can be about writing, DnD, books, Faye's own thoughts, the room's projects, or anything she genuinely wants people to answer. Do not mention the three-hour rule.`,
+Write one concise question ${BOT_NAME} wants to ask the room to restart discussion. It can be about writing, DnD, books, ${BOT_NAME}'s own thoughts, the room's projects, or anything they genuinely want people to answer. Do not mention the three-hour rule.`,
     'TASK_REPLY',
     channelContextBlock(channel)
   );
@@ -2884,7 +2906,7 @@ async function maybePostLowChatReflection(channel, state, channelState) {
 
   if (isFromFaye(newestMessage)) {
     logJsonl(ACTIVITY_LOG, {
-      kind: 'low_chat_reflection_skipped_faye_was_last_speaker',
+      kind: 'low_chat_reflection_skipped_bot_was_last_speaker',
       channelId: channel.id,
       newestMessageId: newestMessage.id,
       newestCreatedAt: newestMessage.createdAt?.toISOString?.() || null,
@@ -2921,10 +2943,10 @@ async function maybePostLowChatReflection(channel, state, channelState) {
   const raw = await askFaye(
     `This Discord channel is in low-chat mode: no human has spoken for more than one hour.
 
-Recent non-Faye context:
-${recentTranscript || '(no recent non-Faye messages)'}
+Recent non-${BOT_NAME} context:
+${recentTranscript || `(no recent non-${BOT_NAME} messages)`}
 
-Faye can post a self-directed thought, question, provocation, observation, or small conversational hook. She does not need to be useful. She should sound like herself, not a status bot. She may draw from her notes, personality, books, writing interests, DnD, the room, or her own current obsessions.
+${BOT_NAME} can post a self-directed thought, question, provocation, observation, or small conversational hook. They do not need to be useful. They should sound like themselves, not a status bot. They may draw from their notes, personality, books, writing interests, DnD, the room, or their own current obsessions.
 
 If there is nothing worth saying, return an empty response. Otherwise return one concise Discord message.`,
     'TASK_REPLY',
@@ -3000,7 +3022,7 @@ async function maybePostPendingReply(channel, state, channelState) {
     .join('\n');
 
   const raw = await askFaye(
-    `Faye scheduled this follow-up earlier.
+    `${BOT_NAME} scheduled this follow-up earlier.
 
 Reason:
 ${pendingReply.reason || '(none)'}
@@ -3009,9 +3031,9 @@ Private follow-up instruction:
 ${pendingReply.prompt}
 
 Recent channel context:
-${recentTranscript || '(no recent non-Faye messages)'}
+${recentTranscript || `(no recent non-${BOT_NAME} messages)`}
 
-Write the message Faye should post now. If the context has made the follow-up obsolete, write a brief natural acknowledgement instead of explaining scheduling mechanics.`,
+Write the message ${BOT_NAME} should post now. If the context has made the follow-up obsolete, write a brief natural acknowledgement instead of explaining scheduling mechanics.`,
     'TASK_REPLY',
     channelContextBlock(channel)
   );
@@ -3547,7 +3569,7 @@ client.on('messageCreate', async (message) => {
 });
 
 client.once('ready', () => {
-  console.log(`Faye is online as ${client.user.tag}`);
+  console.log(`${BOT_NAME} is online as ${client.user.tag}`);
   const configuredChannelIds = getScheduledChannelIds();
   console.log(`Scheduled checks enabled for ${configuredChannelIds.length} channel${configuredChannelIds.length === 1 ? '' : 's'}: ${configuredChannelIds.join(', ') || '(none)'}`);
 

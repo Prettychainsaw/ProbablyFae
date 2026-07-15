@@ -3,7 +3,22 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$KillSwitch = Join-Path $BotDir "FAYE_KILL_SWITCH"
+$envPath = Join-Path $BotDir ".env"
+$botSlug = "faye"
+if (Test-Path $envPath) {
+  $envLines = Get-Content $envPath
+  $slugLine = $envLines | Where-Object { $_ -match '^BOT_SLUG=' } | Select-Object -First 1
+  if ($slugLine) { $botSlug = ($slugLine -replace '^BOT_SLUG=', '').Trim() }
+  if (-not $slugLine) {
+    $nameLine = $envLines | Where-Object { $_ -match '^(BOT_NAME|FAYE_NAME)=' } | Select-Object -First 1
+    if ($nameLine) {
+      $botName = ($nameLine -replace '^(BOT_NAME|FAYE_NAME)=', '').Trim()
+      $derivedSlug = ($botName.ToLower() -replace '[^a-z0-9]+', '-' -replace '^-+|-+$', '')
+      if (-not [string]::IsNullOrWhiteSpace($derivedSlug)) { $botSlug = $derivedSlug }
+    }
+  }
+}
+$KillSwitch = Join-Path $BotDir "$($botSlug.ToUpper())_KILL_SWITCH"
 $PidFile = Join-Path $BotDir "bot.pid"
 
 function Get-BotProcess {
@@ -21,12 +36,11 @@ function Get-BotProcess {
 
 function Show-Status {
   $version = if (Test-Path (Join-Path $BotDir "VERSION")) { Get-Content (Join-Path $BotDir "VERSION") -Raw } else { "unknown" }
-  $envPath = Join-Path $BotDir ".env"
   $model = "unknown"
   $channels = "unknown"
   if (Test-Path $envPath) {
     $envLines = Get-Content $envPath
-    $model = ($envLines | Where-Object { $_ -match '^FAYE_MODEL=' } | Select-Object -First 1) -replace '^FAYE_MODEL=', ''
+    $model = ($envLines | Where-Object { $_ -match '^(BOT_MODEL|FAYE_MODEL)=' } | Select-Object -First 1) -replace '^(BOT_MODEL|FAYE_MODEL)=', ''
     $channels = ($envLines | Where-Object { $_ -match '^DISCORD_CHANNEL_IDS=' } | Select-Object -First 1) -replace '^DISCORD_CHANNEL_IDS=', ''
   }
 
@@ -50,8 +64,8 @@ function Start-Bot {
     Write-Host "Bot already appears to be running."
     return
   }
-  $stdout = Join-Path $BotDir "faye-runtime.log"
-  $stderr = Join-Path $BotDir "faye-runtime.err.log"
+  $stdout = Join-Path $BotDir "bot-runtime.log"
+  $stderr = Join-Path $BotDir "bot-runtime.err.log"
   $process = Start-Process -FilePath "node.exe" `
     -ArgumentList "bot.js" `
     -WorkingDirectory $BotDir `

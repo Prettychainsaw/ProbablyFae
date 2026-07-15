@@ -1,6 +1,6 @@
 # Bot Installer Plan
 
-Goal: make this bot setup repeatable for Faye-like bots without hardcoding Faye-specific identity, channels, or behavior.
+Goal: make this bot setup repeatable for local Discord companion bots without hardcoding one bot's identity, channels, or behavior.
 
 ## Installer Inputs
 
@@ -64,14 +64,14 @@ Preferred behavior:
 - If a slower/better model is viable, offer it as the quality option.
 - If the machine is resource-limited, show a clearly marked fallback option that is not recommended for quality but is likely to run.
 - If no model is installed, run `ollama pull <model>`.
-- Write `FAYE_MODEL` or generic `BOT_MODEL` to `.env`.
+- Write generic `BOT_MODEL` to `.env`, while keeping legacy `FAYE_MODEL` compatibility for old local installs.
 
-The current Faye setup uses a local Ollama model, so no OpenAI quota should be required for normal replies.
+The current setup uses a local Ollama model, so no OpenAI quota should be required for normal replies.
 
 Recommended model list should be generated from the target machine, but roughly:
 
 - quality: Gemma 12B local model, if the machine can tolerate it
-- balanced: current known-good local model used by Faye
+- balanced: current known-good local model used by the prototype
 - fallback: smaller model for low-resource machines, clearly marked as less coherent
 
 Do not hide the tradeoff. The installer should say that larger models may answer much more slowly but usually produce better replies.
@@ -279,11 +279,11 @@ Example shape:
 Hey. I'm <name>. I'm here for <personality-driven purpose>, and apparently to make this room less boring.
 ```
 
-Do not hardcode Faye's tone into the installer. The intro must come from the selected personality.
+Do not hardcode one bot's tone into the installer. The intro must come from the selected personality.
 
 ## Scalable Idle Rules
 
-Do not hardcode Faye-specific checks.
+Do not hardcode one bot's checks.
 
 Generic low-chat behavior:
 
@@ -299,7 +299,7 @@ Future multi-bot option:
 
 Every installed bot needs a hard kill switch.
 
-For Faye this is:
+For a bot with slug `faye`, this is:
 
 ```powershell
 Set-Content -Path .\FAYE_KILL_SWITCH -Value "stopping because something is wrong"
@@ -308,7 +308,8 @@ Set-Content -Path .\FAYE_KILL_SWITCH -Value "stopping because something is wrong
 For a generic installer this should become:
 
 ```powershell
-Set-Content -Path .\<BOT_NAME>_KILL_SWITCH -Value "stopping because something is wrong"
+$slug = "YOUR_BOT_SLUG"
+Set-Content -LiteralPath ".\$($slug.ToUpper())_KILL_SWITCH" -Value "stopping because something is wrong"
 ```
 
 The kill switch must:

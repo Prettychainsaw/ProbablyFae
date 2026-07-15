@@ -8,7 +8,7 @@
     "version": "0.0.1",
     "releaseUrl": "https://github.com/Prettychainsaw/ProbablyFae/releases/tag/v0.0.1",
     "assetUrl": "https://github.com/Prettychainsaw/ProbablyFae/releases/download/v0.0.1/ProbablyFae-Setup.exe",
-    "notes": "Alpha installer. Still Faye-shaped internally and intended for prototype testing."
+    "notes": "Alpha installer for a configurable local Discord companion bot. Intended for prototype testing."
   },
   "next": {}
 }
