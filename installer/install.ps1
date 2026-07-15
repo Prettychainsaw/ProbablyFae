@@ -652,6 +652,8 @@ if ([string]::IsNullOrWhiteSpace($personality)) {
 }
 
 Write-Step "Discord settings"
+Write-Host "Opening the Discord Developer Portal so you can create/select the bot and copy its token."
+Start-Process "https://discord.com/developers/applications"
 $discordToken = Read-SecretPlainText "Discord bot token"
 $channelIds = Read-Required "Discord channel ID to watch"
 $clientId = Read-Host "Discord application/client ID, used to open invite URL"
