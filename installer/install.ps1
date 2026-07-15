@@ -597,13 +597,15 @@ Wonder
       Write-Host "$($i + 1). $($choices[$i])"
     }
     Write-Host "4. None of these"
+    Write-Host "5. Random pick for me"
     $pick = Read-Host "Choice"
     switch ($pick) {
       "1" { return $choices[0] }
       "2" { return $choices[1] }
       "3" { return $choices[2] }
       "4" { continue }
-      default { Write-Host "Pick 1-4." -ForegroundColor Yellow }
+      "5" { return ($names | Get-Random) }
+      default { Write-Host "Pick 1-5." -ForegroundColor Yellow }
     }
   }
 }
