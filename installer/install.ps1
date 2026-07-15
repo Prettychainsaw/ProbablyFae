@@ -126,6 +126,43 @@ function Confirm-DiscordChannels($discordToken) {
   }
 }
 
+function Prepare-InstallDirectory($installDir, $botName) {
+  $parent = Split-Path -Parent $installDir
+  New-Item -ItemType Directory -Force -Path $parent | Out-Null
+
+  if (-not (Test-Path $installDir)) {
+    New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+    return
+  }
+
+  Write-Step "Existing install found"
+  Write-Host "An install folder already exists for ${botName}:"
+  Write-Host $installDir
+  Write-Host ""
+  Write-Host "1. Clean reinstall: back up the old folder, then create a fresh install. Recommended after a failed or half-finished install."
+  Write-Host "2. Update existing folder: keep existing knowledge/state/env files and overwrite app files."
+  Write-Host "3. Cancel install."
+  $choice = Read-Host "Choice [1]"
+
+  switch ($choice) {
+    "2" {
+      New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+      return
+    }
+    "3" {
+      throw "Install cancelled because an existing install folder was found."
+    }
+    default {
+      $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+      $backupPath = "$installDir.backup-$stamp"
+      Move-Item -LiteralPath $installDir -Destination $backupPath
+      Write-Host "Backed up old install to: $backupPath"
+      New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+      return
+    }
+  }
+}
+
 function Get-OllamaExe {
   $cmd = Get-Command ollama.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($cmd) { return [string]$cmd.Source }
@@ -828,6 +865,10 @@ $botName = Select-BotName
 $botSlug = ($botName.ToLower() -replace '[^a-z0-9]+', '-' -replace '^-+|-+$', '')
 if ([string]::IsNullOrWhiteSpace($botSlug)) { $botSlug = "bot" }
 Show-InputHelp `
+  "Discord visible bot name" `
+  "The installer name controls the bot's local identity files. Discord's visible APP name comes from Developer Portal -> your application -> Bot -> Username. Make that match $botName if you want Discord and the local personality to agree." `
+  "https://discord.com/developers/applications"
+Show-InputHelp `
   "Starting personality" `
   "Write one short paragraph describing the bot's starting personality. Leave it blank to use the default sharp/playful local Discord companion personality."
 $personality = Read-Host "Starting personality, one paragraph"
@@ -873,7 +914,7 @@ $model = Select-Model $ollama
 Write-Step "Copy files"
 $safeName = ($botName -replace '[^A-Za-z0-9_.-]', '-')
 $installDir = Join-Path $InstallRoot $safeName
-New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+Prepare-InstallDirectory $installDir $botName
 
 $source = $PSScriptRoot
 $files = @(
