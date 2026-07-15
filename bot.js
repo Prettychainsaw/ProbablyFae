@@ -445,9 +445,30 @@ async function acknowledgeMessageHeard(message, trigger) {
   }
 }
 
+function safeErrorSummary(err) {
+  const message = String(err?.message || err || 'unknown error');
+  if (/model .* not found|pull model|not found, try pulling|404/i.test(message)) {
+    return 'local model is missing or not pulled yet';
+  }
+  if (/ECONNREFUSED|fetch failed|connect.*11434|ollama/i.test(message)) {
+    return 'local Ollama service/model call failed';
+  }
+  if (/aborted|timeout|AbortError/i.test(message)) {
+    return 'local model timed out before answering';
+  }
+  if (/Missing Access|Missing Permissions|50013|403/i.test(message)) {
+    return 'Discord permissions blocked the reply';
+  }
+  if (/Cannot send messages|Unknown Channel|50001|10003/i.test(message)) {
+    return 'Discord channel access failed';
+  }
+  return shortContent(message, 180);
+}
+
 async function reportAcknowledgedFailure(message, err, trigger) {
   try {
-    const text = 'I saw this and started working on it, but I hit an error before I could answer cleanly. I am not ignoring it.';
+    const summary = safeErrorSummary(err);
+    const text = `I saw this and started working on it, but I hit an error before I could answer cleanly: ${summary}. I am not ignoring it.`;
     await message.reply(text.slice(0, 1900));
     logJsonl(OUTBOX_LOG, {
       kind: 'acknowledged_failure_reply',
@@ -456,6 +477,7 @@ async function reportAcknowledgedFailure(message, err, trigger) {
       trigger,
       text,
       error: err.message,
+      safeError: summary,
     });
   } catch (replyErr) {
     logJsonl(ACTIVITY_LOG, {
@@ -1646,6 +1668,15 @@ function latestWebSearchStatus() {
   return `ok ${age}${query}, ${latest.resultCount} result${latest.resultCount === 1 ? '' : 's'}${providerErrorCount ? `; ${providerErrorCount} provider error${providerErrorCount === 1 ? '' : 's'}` : ''}`;
 }
 
+function latestDirectReplyFailureStatus() {
+  const entries = readJsonlTail(ACTIVITY_LOG, 100).reverse();
+  const latest = entries.find((entry) => entry.kind === 'direct_address_reply_failed');
+  if (!latest) return 'none logged';
+  const age = formatAge(latest.time);
+  const trigger = latest.trigger ? `, trigger ${latest.trigger}` : '';
+  return `${age}${trigger}: ${latest.safeError || shortContent(latest.error || 'unknown error', 120)}`;
+}
+
 function formatAge(isoValue) {
   if (!isoValue) return 'never';
   const ms = Date.now() - new Date(isoValue).getTime();
@@ -1680,6 +1711,7 @@ function operationalStatusReply(channel) {
     `- task queue: ${taskRunning ? 'running' : 'idle'}, ${taskQueue.length} waiting`,
     `- pulse reading: ${pulse}`,
     `- web lookup: ${(process.env.BOT_WEB_SEARCH || process.env.FAYE_WEB_SEARCH) === '0' ? 'disabled by env' : 'enabled'}, last lookup ${latestWebSearchStatus()}`,
+    `- last reply error: ${latestDirectReplyFailureStatus()}`,
     `- kill switch: ${readKillSwitchReason() ? 'active' : 'off'}`,
   ].join('\n');
 }
@@ -3756,6 +3788,16 @@ client.on('messageCreate', async (message) => {
     }
   } catch (err) {
     console.error('Direct-address reply failed:', err);
+    logJsonl(ACTIVITY_LOG, {
+      kind: 'direct_address_reply_failed',
+      trigger: directAddressContext?.trigger || null,
+      channelId: directAddressContext?.message?.channel?.id || null,
+      messageId: directAddressContext?.message?.id || null,
+      author: directAddressContext?.message ? displayName(directAddressContext.message) : null,
+      error: err.message,
+      safeError: safeErrorSummary(err),
+      stack: err.stack ? shortContent(err.stack, 1000) : null,
+    });
     if (directAddressContext && !checkKillSwitch('direct_address_error')) {
       await reportAcknowledgedFailure(directAddressContext.message, err, directAddressContext.trigger);
     }
