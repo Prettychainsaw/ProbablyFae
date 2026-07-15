@@ -1,0 +1,13 @@
+.env
+*.log
+*.jsonl
+state.json
+node_modules/
+FAYE_KILL_SWITCH
+
+# Bot-owned private runtime memory and copied user content.
+knowledge/
+
+# Local/editor noise.
+.DS_Store
+Thumbs.db
