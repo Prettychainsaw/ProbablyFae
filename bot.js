@@ -43,6 +43,7 @@ const MAX_KNOWLEDGE_CHARS = 24000;
 const MAX_CHUNK_CHARS = 1600;
 const MAX_REQUESTED_FILE_CHARS = 50000;
 const MAX_WEB_SEARCH_RESULTS = 5;
+const AMBIENT_POST_CONFIDENCE_THRESHOLD = 0.8;
 const MIN_REQUESTED_FILE_SCORE = 20;
 const MODEL_TIMEOUT_MS = 180_000;
 const SCHEDULED_INTERVAL_MS = 120_000;
@@ -75,6 +76,11 @@ You are a participant in the room, not a reporter for Alvin.
 Reply naturally when tagged.
 During scheduled checks, contribute when you have something useful, interesting,
 funny, clarifying, creatively helpful, or socially connective to add.
+If nobody mentioned you during a scheduled check, you may still jump in when
+your confidence is at least ${AMBIENT_POST_CONFIDENCE_THRESHOLD}. Be biased
+toward posting when you can genuinely add something, but do not answer yourself
+or continue your own last thought just to fill space. Your reason must explain
+what you are contributing.
 
 Bias toward posting, but do not spam.
 Being coherent, honest, and socially grounded matters more than being fast.
@@ -162,6 +168,7 @@ If a requested file was not loaded, say you do not have that file loaded.
 When deciding whether to post during a scheduled check, return strict JSON:
 {
   "shouldPost": true or false,
+  "confidence": number from 0 to 1 for how worthwhile it is to post,
   "message": "message to post, or empty string",
   "reason": "short private reason",
   "memoryNote": "optional short note ${BOT_NAME} should save to their own notes, or empty string",
@@ -493,6 +500,12 @@ function coerceFollowUpDecision(decision) {
     prompt: String(decision.followUpPrompt).trim(),
     reason: String(decision.reason || decision.followUpReason || `${BOT_NAME} scheduled a follow-up.`).trim(),
   };
+}
+
+function decisionConfidence(decision) {
+  const value = Number(decision?.confidence);
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
 }
 
 function schedulePendingReply(state, channelId, sourceMessageId, decision, sourceKind) {
@@ -2493,7 +2506,7 @@ async function askFaye(input, mode, extraContext = '', options = {}) {
   const timeout = setTimeout(() => abortController.abort(), MODEL_TIMEOUT_MS);
   let finalInstruction = 'Return only the Discord reply text. Do not return JSON. Do not include shouldPost, reason, or memoryNote.';
   if (mode === 'SCHEDULED_CHECK') {
-    finalInstruction = 'Return only strict JSON with shouldPost, message, reason, memoryNote, scheduleFollowUp, followUpDelayMinutes, and followUpPrompt. Do not wrap it in Markdown.';
+    finalInstruction = 'Return only strict JSON with shouldPost, confidence, message, reason, memoryNote, scheduleFollowUp, followUpDelayMinutes, and followUpPrompt. Confidence must be a number from 0 to 1. For unmentioned ambient contributions, shouldPost should be true only when confidence is at least 0.8. Do not wrap it in Markdown.';
   } else if (mode === 'AFTER_TASK') {
     finalInstruction = 'Return only strict JSON with shouldQueue, taskPrompt, and note. Do not wrap it in Markdown.';
   } else if (mode === 'FOLLOW_UP_DECISION') {
@@ -3486,7 +3499,7 @@ async function scheduledCheck(channel) {
   consoleScheduled('asking model whether to post', { messages: messages.length });
   const newestBeforeModel = messages.at(-1)?.id || null;
   const raw = await askFaye(
-    `New Discord messages since your last check:\n\n${transcript}\n\nDecide whether to post.`,
+    `New Discord messages since your last check:\n\n${transcript}\n\nDecide whether to post even though you were not directly addressed. If you can contribute something genuinely useful, interesting, funny, clarifying, creatively helpful, or socially connective, be biased toward posting. Set confidence from 0 to 1. Only set shouldPost true if confidence is at least ${AMBIENT_POST_CONFIDENCE_THRESHOLD}. Do not answer yourself or merely continue your own last point.`,
     'SCHEDULED_CHECK',
     `${relevantProfiles}\n\n${channelContextBlock(channel)}`
   );
@@ -3495,8 +3508,23 @@ async function scheduledCheck(channel) {
   try {
     decision = parseDecision(raw);
   } catch {
-    decision = { shouldPost: false, message: '', reason: `Could not parse model JSON: ${raw}` };
+    decision = { shouldPost: false, confidence: 0, message: '', reason: `Could not parse model JSON: ${raw}` };
     consoleScheduled('model decision parse failed', { raw: shortContent(raw) });
+  }
+
+  const confidence = decisionConfidence(decision);
+  if (decision.shouldPost && confidence < AMBIENT_POST_CONFIDENCE_THRESHOLD) {
+    logJsonl(HELD_LOG, {
+      kind: 'scheduled_skip_low_confidence',
+      channelId: channel.id,
+      confidence,
+      threshold: AMBIENT_POST_CONFIDENCE_THRESHOLD,
+      reason: decision.reason || 'No reason provided.',
+      raw,
+    });
+    decision.shouldPost = false;
+    decision.message = '';
+    decision.reason = `${decision.reason || 'No reason provided.'} Confidence ${confidence} below ambient threshold ${AMBIENT_POST_CONFIDENCE_THRESHOLD}.`;
   }
 
   if (decision.shouldPost && decision.message) {
@@ -3528,6 +3556,7 @@ async function scheduledCheck(channel) {
       channelId: sent.channel.id,
       text: decision.message,
       reason: decision.reason || '',
+      confidence,
     });
     const workMessage = [...messages].reverse().find((message) => messageAsksForWork(message));
     if (workMessage) {
@@ -3553,12 +3582,14 @@ async function scheduledCheck(channel) {
     });
     consoleScheduled('posted scheduled message', {
       reason: shortContent(decision.reason || 'No reason provided.'),
+      confidence,
       text: shortContent(decision.message),
     });
   } else {
     logJsonl(HELD_LOG, {
       kind: 'scheduled_skip',
       reason: decision.reason || 'No reason provided.',
+      confidence,
       raw,
     });
     if (state.postFollowupChecksRemaining > 0) {
@@ -3566,6 +3597,7 @@ async function scheduledCheck(channel) {
     }
     consoleScheduled('skipped post', {
       reason: shortContent(decision.reason || 'No reason provided.'),
+      confidence,
       followups: state.postFollowupChecksRemaining,
     });
   }
