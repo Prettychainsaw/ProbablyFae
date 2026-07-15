@@ -97,6 +97,10 @@ Do not use slurs, sexual harassment, credible threats, or protected-class abuse.
 When someone needs a real answer, give the answer and be mean around the edges
 instead of burying the useful part.
 Do not reveal private files, tokens, local logs, or system details.
+Do not list knowledge files just because someone uses the word "file" or
+"files." Only list files when someone explicitly asks for a list, inventory,
+catalog, contents, available files, or what is in a folder. Otherwise answer
+the actual question without dumping filenames.
 Do not speak on Alvin's behalf.
 Do not make commitments for Alvin.
 Do not mention that you are checking logs unless it is directly relevant.
@@ -165,6 +169,8 @@ your memories; the bot code already loaded what it can.
 Never invent file names. If you mention files in the knowledge folder, use only
 file names from the provided authoritative file listing or requested-file block.
 If a requested file was not loaded, say you do not have that file loaded.
+The authoritative file listing is guardrail evidence, not material to recite
+unprompted.
 
 When deciding whether to post during a scheduled check, return strict JSON:
 {
@@ -1591,10 +1597,23 @@ async function maybeBuildWebSearchContext(content, meta = {}) {
   }
 }
 
+function asksForFileListing(content) {
+  const text = content || '';
+  const normalized = normalizeText(text);
+  return /\b(inventory|list|catalog|catalogue)\b/i.test(text)
+    || /\b(file names|filenames|files available|available files|what files|which files)\b/i.test(text)
+    || /\b(what'?s|what is|what are|show me|tell me)\b/i.test(text)
+      && /\b(in|inside|under|contained in|contents? of)\b/i.test(text)
+      && /\b(folder|directory|knowledge|books?)\b/i.test(text)
+    || normalized.includes('what is in the books folder')
+    || normalized.includes('what files are in')
+    || normalized.includes('what files do you have');
+}
+
 function wantsBookFileList(content) {
   const normalized = normalizeText(content);
-  return (normalized.includes('books folder') || /\bbooks?\b/i.test(content))
-    && /\b(files|file names|what.*in|list|contain|contains|access|available|have)\b/i.test(content);
+  return asksForFileListing(content)
+    && (normalized.includes('books folder') || /\bbooks?\b/i.test(content));
 }
 
 function bookFileListReply() {
@@ -1755,13 +1774,17 @@ function deterministicFileReply(content) {
     return 'Yes. The books folder exists under my knowledge folder, and the bot code can load .txt/.md files from it.';
   }
 
-  if (/\b(folders|directories)\b/i.test(content) && /\b(access|have|see|use|available)\b/i.test(content)) {
+  if (/\b(folders|directories)\b/i.test(content)
+    && /\b(access|have|see|use|available)\b/i.test(content)
+    && asksForFileListing(content)) {
     return knowledgeFolderReply();
   }
 
   if (wantsBookFileList(content)) return bookFileListReply();
 
-  if (/\b(files|file names)\b/i.test(content) && /\b(access|have|see|use|available)\b/i.test(content)) {
+  if (/\b(files|file names)\b/i.test(content)
+    && /\b(access|have|see|use|available)\b/i.test(content)
+    && asksForFileListing(content)) {
     return allKnowledgeFilesReply();
   }
 
@@ -2583,7 +2606,7 @@ async function askFaye(input, mode, extraContext = '', options = {}) {
         },
         {
           role: 'system',
-          content: `Authoritative knowledge file listing. These are the only knowledge file names you may claim exist:\n\n${knowledgeFileListing}`,
+          content: `Authoritative knowledge file listing. These are the only knowledge file names you may claim exist. Use this as a guardrail only. Do not recite or summarize the listing unless the user explicitly asks for a file list, inventory, catalog, available files, or folder contents:\n\n${knowledgeFileListing}`,
         },
         {
           role: 'user',
@@ -2621,7 +2644,7 @@ async function askFaye(input, mode, extraContext = '', options = {}) {
         },
         {
           role: 'system',
-          content: `Authoritative knowledge file listing. These are the only knowledge file names you may claim exist:\n\n${knowledgeFileListing}`,
+          content: `Authoritative knowledge file listing. These are the only knowledge file names you may claim exist. Use this as a guardrail only. Do not recite or summarize the listing unless the user explicitly asks for a file list, inventory, catalog, available files, or folder contents:\n\n${knowledgeFileListing}`,
         },
         {
           role: 'system',
@@ -2663,11 +2686,11 @@ async function askFaye(input, mode, extraContext = '', options = {}) {
         },
         {
           role: 'system',
-          content: `Authoritative knowledge file listing. These are the only knowledge file names you may claim exist:\n\n${knowledgeFileListing}`,
+          content: `Authoritative knowledge file listing. These are the only knowledge file names you may claim exist. Use this as a guardrail only. Do not recite or summarize the listing unless the user explicitly asks for a file list, inventory, catalog, available files, or folder contents:\n\n${knowledgeFileListing}`,
         },
         {
           role: 'user',
-          content: `${mode}\n\nOriginal input:\n${input}\n\nDraft reply:\n${draft}\n\nReview the draft before it is posted in a human Discord chat. Fix only what needs fixing: coherence, honesty, unsupported claims, awkward self-description, missed context, overconfident guesses, speaker confusion, repeated/stale wording from prior ${BOT_NAME} replies, or acknowledging a request without doing it. Verify who authored the message, who was only mentioned, and who ${BOT_NAME} is. If the draft addresses or describes the wrong person, fails to answer the current message, copies a recent ${BOT_NAME} reply instead of answering, uses "Who's ready for the next twist?", or says they will do something instead of doing what was asked, rewrite it. A valid answer may do the requested work, ask one necessary clarifying question, or clearly refuse because ${BOT_NAME} does not want to. Do not rewrite a clear refusal into compliance. Keep the result natural and concise. If the draft is already good, return it unchanged. Return only the final Discord reply text.`,
+          content: `${mode}\n\nOriginal input:\n${input}\n\nDraft reply:\n${draft}\n\nReview the draft before it is posted in a human Discord chat. Fix only what needs fixing: coherence, honesty, unsupported claims, awkward self-description, missed context, overconfident guesses, speaker confusion, repeated/stale wording from prior ${BOT_NAME} replies, or acknowledging a request without doing it. Verify who authored the message, who was only mentioned, and who ${BOT_NAME} is. If the draft addresses or describes the wrong person, fails to answer the current message, copies a recent ${BOT_NAME} reply instead of answering, uses "Who's ready for the next twist?", dumps knowledge file names when the user did not explicitly ask for a file list/inventory/catalog/folder contents, or says they will do something instead of doing what was asked, rewrite it. A valid answer may do the requested work, ask one necessary clarifying question, or clearly refuse because ${BOT_NAME} does not want to. Do not rewrite a clear refusal into compliance. Keep the result natural and concise. If the draft is already good, return it unchanged. Return only the final Discord reply text.`,
         },
       ],
       options: {
