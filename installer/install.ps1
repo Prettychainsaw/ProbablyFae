@@ -9,6 +9,16 @@ function Write-Step($message) {
   Write-Host "== $message ==" -ForegroundColor Cyan
 }
 
+function Show-InputHelp($title, $help, $url = "") {
+  Write-Host ""
+  Write-Host $title -ForegroundColor Yellow
+  Write-Host $help
+  if (-not [string]::IsNullOrWhiteSpace($url)) {
+    Write-Host "Opening: $url"
+    Start-Process $url
+  }
+}
+
 function Read-Required($prompt) {
   do {
     $value = Read-Host $prompt
@@ -43,6 +53,10 @@ function Ensure-Node {
   if (Get-Command node.exe -ErrorAction SilentlyContinue) { return }
 
   Write-Step "Node.js is missing"
+  Show-InputHelp `
+    "Node.js install question" `
+    "Node.js runs the Discord bot. Choose Y to let this installer install Node.js LTS with winget, or N if you want to install it yourself first." `
+    "https://nodejs.org/"
   $answer = Read-Host "Install Node.js LTS with winget now? (Y/n)"
   if ($answer -match '^(n|no)$') {
     throw "Node.js is required. Install Node.js LTS and run this installer again."
@@ -59,6 +73,10 @@ function Ensure-Ollama {
   if ($ollama) { return $ollama }
 
   Write-Step "Ollama is missing"
+  Show-InputHelp `
+    "Ollama install question" `
+    "Ollama runs the local language model. Choose Y to let this installer install Ollama with winget, or N if you want to install it yourself first." `
+    "https://ollama.com/download"
   $answer = Read-Host "Install Ollama with winget now? (Y/n)"
   if ($answer -match '^(n|no)$') {
     throw "Ollama is required for local replies. Install Ollama and run this installer again."
@@ -589,6 +607,10 @@ Wonder
     throw "Curated name pool contains duplicate names: $($duplicateNames.Name -join ', ')"
   }
 
+  Show-InputHelp `
+    "Bot name choice" `
+    "Pick one of the displayed curated names, ask for three more, or let the installer randomly choose one from the 500-name pool. There is no custom-name option."
+
   while ($true) {
     $choices = $names | Get-Random -Count 3
     Write-Host ""
@@ -612,6 +634,10 @@ Wonder
 
 function Select-Model($ollama) {
   Write-Step "Model selection"
+  Show-InputHelp `
+    "Ollama model choice" `
+    "Choose the local model this bot will use. Larger models are usually more coherent but slower. The installer can pull the selected model if it is missing." `
+    "https://ollama.com/search"
   Write-Host "Recommended:"
   Write-Host "1. qwen3:8b       balanced/current known-good"
   Write-Host "2. gemma3:12b     slower/better, if your machine can handle it"
@@ -622,13 +648,23 @@ function Select-Model($ollama) {
   switch ($choice) {
     "2" { $model = "gemma3:12b" }
     "3" { $model = "gemma3:4b" }
-    "4" { $model = Read-Required "Ollama model tag" }
+    "4" {
+      Show-InputHelp `
+        "Custom Ollama model tag" `
+        "Copy a model tag from Ollama's model library, for example qwen3:8b or gemma3:12b." `
+        "https://ollama.com/search"
+      $model = Read-Required "Ollama model tag"
+    }
     default { $model = "qwen3:8b" }
   }
 
   Write-Host "Checking installed Ollama models..."
   $list = & $ollama list 2>$null
   if ($LASTEXITCODE -ne 0 -or ($list -notmatch [regex]::Escape($model))) {
+    Show-InputHelp `
+      "Ollama model pull question" `
+      "The selected model is not installed locally. Choose Y to download it now. This may take a while and can be several GB." `
+      "https://ollama.com/search"
     $answer = Read-Host "Pull $model now? This can take a while. (Y/n)"
     if ($answer -notmatch '^(n|no)$') {
       & $ollama pull $model
@@ -646,17 +682,34 @@ Write-Step "Choose identity"
 $botName = Select-BotName
 $botSlug = ($botName.ToLower() -replace '[^a-z0-9]+', '-' -replace '^-+|-+$', '')
 if ([string]::IsNullOrWhiteSpace($botSlug)) { $botSlug = "bot" }
+Show-InputHelp `
+  "Starting personality" `
+  "Write one short paragraph describing the bot's starting personality. Leave it blank to use the default sharp/playful local Discord companion personality."
 $personality = Read-Host "Starting personality, one paragraph"
 if ([string]::IsNullOrWhiteSpace($personality)) {
   $personality = "A sharp, playful local Discord bot with a tendency to tease and a bias toward honest answers."
 }
 
 Write-Step "Discord settings"
-Write-Host "Opening the Discord Developer Portal so you can create/select the bot and copy its token."
-Start-Process "https://discord.com/developers/applications"
+Show-InputHelp `
+  "Discord bot token" `
+  "Use the Bot page token, not the client secret or public key. Developer Portal -> your application -> Bot -> Reset Token or View Token." `
+  "https://discord.com/developers/applications"
 $discordToken = Read-SecretPlainText "Discord bot token"
+Show-InputHelp `
+  "Discord channel ID" `
+  "Turn on Discord Developer Mode, right-click the target channel, then Copy Channel ID. The bot will watch this channel. You can paste multiple channel IDs separated by commas." `
+  "https://support.discord.com/hc/en-us/articles/206346498"
 $channelIds = Read-Required "Discord channel ID to watch"
+Show-InputHelp `
+  "Discord application/client ID" `
+  "Use the Application ID from Developer Portal -> your application -> General Information. This is only used to open the bot invite URL." `
+  "https://discord.com/developers/applications"
 $clientId = Read-Host "Discord application/client ID, used to open invite URL"
+Show-InputHelp `
+  "Optional trigger role IDs" `
+  "If you want a Discord role mention to trigger the bot, enable Developer Mode, right-click the role, and copy its ID. Leave blank if you do not need role-triggered replies." `
+  "https://support.discord.com/hc/en-us/articles/206346498"
 $triggerRoles = Read-Host "Optional trigger role IDs, comma-separated"
 
 Write-Step "Dependencies"
