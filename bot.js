@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import fs from 'node:fs';
 import path from 'node:path';
-import { Client, GatewayIntentBits } from 'discord.js';
+import { Client, GatewayIntentBits, Partials } from 'discord.js';
 import ollama from 'ollama';
 
 const STATE_FILE = './state.json';
@@ -175,8 +175,10 @@ const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.DirectMessages,
     GatewayIntentBits.MessageContent,
   ],
+  partials: [Partials.Channel],
 });
 
 function readState() {
@@ -218,6 +220,22 @@ function writeState(state) {
 
 function logJsonl(file, obj) {
   fs.appendFileSync(file, JSON.stringify({ time: new Date().toISOString(), ...obj }) + '\n');
+}
+
+function readJsonlTail(file, maxLines = 20) {
+  if (!fs.existsSync(file)) return [];
+  return fs.readFileSync(file, 'utf8')
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .slice(-maxLines)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
 }
 
 function readKillSwitchReason() {
@@ -1303,6 +1321,7 @@ function webSearchQueryFromContent(content) {
     .replace(new RegExp(`\\b${BOT_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b[:,]?\\s*`, 'gi'), ' ')
     .replace(/\b(can you|could you|please|would you|for me)\b/gi, ' ')
     .replace(/\b(search|look up|google|web search|search the web|search online|find out|check the internet)\b/gi, ' ')
+    .replace(/\b(and )?(see|tell me|show me) what you can find\b/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 240);
@@ -1346,18 +1365,34 @@ function cleanBingUrl(href) {
 }
 
 async function searchWeb(query) {
-  const results = [
-    ...await searchBing(query),
-    ...await searchWikipedia(query),
-    ...await searchHackerNews(query),
+  const providers = [
+    ['duckduckgo', searchDuckDuckGo],
+    ['bing', searchBing],
+    ['wikipedia', searchWikipedia],
+    ['hacker-news', searchHackerNews],
   ];
+  const providerErrors = [];
+  const rawResults = [];
+
+  for (const [provider, searchFn] of providers) {
+    try {
+      const providerResults = await searchFn(query);
+      for (const result of providerResults) {
+        rawResults.push({ source: result.source || provider, ...result });
+      }
+    } catch (err) {
+      providerErrors.push({ provider, error: err.message });
+    }
+  }
+
   const seen = new Set();
-  return results.filter((result) => {
+  const results = rawResults.filter((result) => {
     const key = result.url.replace(/^https?:\/\/(www\.)?/i, '').replace(/\/$/, '');
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   }).slice(0, MAX_WEB_SEARCH_RESULTS);
+  return { results, providerErrors };
 }
 
 async function searchDuckDuckGo(query) {
@@ -1458,7 +1493,7 @@ async function searchHackerNews(query) {
 
 function formatWebSearchContext(query, results) {
   if (!results.length) {
-    return `WEB SEARCH QUERY: ${query}\nNo usable web results were returned.`;
+    return `WEB SEARCH QUERY: ${query}\nNo usable web results were returned. Tell the user the lookup ran but did not return usable results.`;
   }
 
   return [
@@ -1477,15 +1512,22 @@ async function maybeBuildWebSearchContext(content, meta = {}) {
   if (!query) return '';
 
   try {
-    const results = await searchWeb(query);
+    const { results, providerErrors } = await searchWeb(query);
     const context = formatWebSearchContext(query, results);
     logJsonl(WEB_LOG, {
       kind: 'web_search',
       query,
       resultCount: results.length,
       results,
+      providerErrors,
       ...meta,
     });
+    if (results.length === 0) {
+      consoleScheduled('web lookup returned no usable results', {
+        query: shortContent(query, 90),
+        providerErrors: providerErrors.length,
+      });
+    }
     return context;
   } catch (err) {
     logJsonl(WEB_LOG, {
@@ -1494,7 +1536,8 @@ async function maybeBuildWebSearchContext(content, meta = {}) {
       error: err.message,
       ...meta,
     });
-    return `WEB SEARCH QUERY: ${query}\nWeb search failed: ${err.message}`;
+    consoleScheduled('web lookup failed', { query: shortContent(query, 90), error: shortContent(err.message, 90) });
+    return `WEB SEARCH QUERY: ${query}\nWeb search failed: ${err.message}\nTell the user the web lookup failed instead of answering as if it worked.`;
   }
 }
 
@@ -1542,10 +1585,37 @@ function allKnowledgeFilesReply() {
   return reply.trim();
 }
 
-function wantsOperationalStatus(content) {
+function isOperationalStatusQuestion(content) {
   const text = content || '';
-  return (namesBot(text) || /<@!?\d+>/.test(text))
-    && /\b(status|how are you doing|are you working|what are you doing|thinking or waiting|queue|pending)\b/i.test(text);
+  if (/\b(status|diagnostic|health|how are you doing|are you working|what are you doing|thinking or waiting|queue|pending)\b/i.test(text)) {
+    return true;
+  }
+  return /\b(web|internet|search|lookup)\b/i.test(text)
+    && /\b(status|diagnostic|health|working|work(?:ing)?|fail(?:ed|ing)?|broken|error|problem|issue)\b/i.test(text);
+}
+
+function wantsOperationalStatus(content, options = {}) {
+  const text = content || '';
+  const directAddressRequired = options.directAddressRequired !== false;
+  const addressed = namesBot(text) || /<@!?\d+>/.test(text);
+  return (!directAddressRequired || addressed) && isOperationalStatusQuestion(text);
+}
+
+function latestWebSearchStatus() {
+  const entries = readJsonlTail(WEB_LOG, 50).reverse();
+  const latest = entries.find((entry) => entry.kind === 'web_search' || entry.kind === 'web_search_failed');
+  if (!latest) return 'none logged';
+  const age = formatAge(latest.time);
+  const query = latest.query ? ` for "${shortContent(latest.query, 80)}"` : '';
+  if (latest.kind === 'web_search_failed') {
+    return `failed ${age}${query}: ${shortContent(latest.error || 'unknown error', 120)}`;
+  }
+  if (Number(latest.resultCount) <= 0) {
+    const providerErrorCount = Array.isArray(latest.providerErrors) ? latest.providerErrors.length : 0;
+    return `ran ${age}${query}, but returned 0 usable results${providerErrorCount ? `; ${providerErrorCount} provider error${providerErrorCount === 1 ? '' : 's'}` : ''}`;
+  }
+  const providerErrorCount = Array.isArray(latest.providerErrors) ? latest.providerErrors.length : 0;
+  return `ok ${age}${query}, ${latest.resultCount} result${latest.resultCount === 1 ? '' : 's'}${providerErrorCount ? `; ${providerErrorCount} provider error${providerErrorCount === 1 ? '' : 's'}` : ''}`;
 }
 
 function formatAge(isoValue) {
@@ -1581,6 +1651,8 @@ function operationalStatusReply(channel) {
     `- pending replies here: ${dueReplies.length}${nextDue ? `, next due ${new Date(nextDue).toLocaleTimeString()}` : ''}`,
     `- task queue: ${taskRunning ? 'running' : 'idle'}, ${taskQueue.length} waiting`,
     `- pulse reading: ${pulse}`,
+    `- web lookup: ${(process.env.BOT_WEB_SEARCH || process.env.FAYE_WEB_SEARCH) === '0' ? 'disabled by env' : 'enabled'}, last lookup ${latestWebSearchStatus()}`,
+    `- kill switch: ${readKillSwitchReason() ? 'active' : 'off'}`,
   ].join('\n');
 }
 
@@ -2609,7 +2681,7 @@ async function replyToDirectAddress(message, trigger = 'direct address') {
     return;
   }
 
-  if (wantsOperationalStatus(message.content)) {
+  if (wantsOperationalStatus(message.content, { directAddressRequired: Boolean(message.guild) })) {
     const text = operationalStatusReply(message.channel);
     const sent = await message.reply(text.slice(0, 1900));
     const state = readState();
@@ -3539,19 +3611,36 @@ client.on('messageCreate', async (message) => {
   try {
     if (!client.user) return;
     if (isFromFaye(message)) return;
-    if (checkKillSwitch('message_create')) return;
+    const isDirectMessage = !message.guild;
+    const isAddressed = isDirectMessage || directlyAddressesFaye(message);
+    if (checkKillSwitch('message_create')) {
+      if (isAddressed && wantsOperationalStatus(message.content, { directAddressRequired: Boolean(message.guild) })) {
+        const text = operationalStatusReply(message.channel);
+        await message.reply(text.slice(0, 1900));
+        logJsonl(OUTBOX_LOG, {
+          kind: 'kill_switch_status_reply',
+          channelId: message.channel.id,
+          replyTo: message.id,
+          text,
+        });
+      }
+      return;
+    }
 
-    if (directlyAddressesFaye(message)) {
-      const trigger = mentionsFayeUser(message)
-        ? '@mention'
-        : mentionsFayeTriggerRole(message)
-          ? 'configured role mention'
-          : 'name';
+    if (isAddressed) {
+      const trigger = isDirectMessage
+        ? 'direct message'
+        : mentionsFayeUser(message)
+          ? '@mention'
+          : mentionsFayeTriggerRole(message)
+            ? 'configured role mention'
+            : 'name';
       directAddressContext = { message, trigger };
       markMessageHandled(message.id);
       logJsonl(INBOX_LOG, {
         kind: 'direct_address_message',
         trigger,
+        isDirectMessage,
         messageId: message.id,
         channelId: message.channel.id,
         author: displayName(message),
