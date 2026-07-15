@@ -133,6 +133,15 @@ function Open-Logs {
   Start-Process explorer.exe $BotDir
 }
 
+function Uninstall-Bot {
+  $uninstallScript = Join-Path $BotDir "uninstall.ps1"
+  if (-not (Test-Path $uninstallScript)) {
+    Write-Host "Uninstall script not found: $uninstallScript" -ForegroundColor Yellow
+    return
+  }
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $uninstallScript -BotDir $BotDir
+}
+
 while ($true) {
   Show-Status
   Write-Host ""
@@ -144,7 +153,8 @@ while ($true) {
   Write-Host "6. Check app updates"
   Write-Host "7. Check model updates"
   Write-Host "8. Open logs folder"
-  Write-Host "9. Exit"
+  Write-Host "9. Uninstall this bot"
+  Write-Host "10. Exit"
   $choice = Read-Host "Choice"
 
   switch ($choice) {
@@ -156,7 +166,8 @@ while ($true) {
     "6" { Check-AppUpdates }
     "7" { Check-ModelUpdates }
     "8" { Open-Logs }
-    "9" { break }
-    default { Write-Host "Pick 1-9." -ForegroundColor Yellow }
+    "9" { Uninstall-Bot; break }
+    "10" { break }
+    default { Write-Host "Pick 1-10." -ForegroundColor Yellow }
   }
 }

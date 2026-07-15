@@ -19,6 +19,7 @@ $filesToPackage = @(
   @{ Source = Join-Path $PSScriptRoot "install.cmd"; Name = "install.cmd" },
   @{ Source = Join-Path $PSScriptRoot "install.ps1"; Name = "install.ps1" },
   @{ Source = Join-Path $PSScriptRoot "control.ps1"; Name = "control.ps1" },
+  @{ Source = Join-Path $PSScriptRoot "uninstall.ps1"; Name = "uninstall.ps1" },
   @{ Source = Join-Path $repoRoot "bot.js"; Name = "bot.js" },
   @{ Source = Join-Path $repoRoot "package.json"; Name = "package.json" },
   @{ Source = Join-Path $repoRoot "package-lock.json"; Name = "package-lock.json" },

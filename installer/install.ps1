@@ -924,7 +924,8 @@ $files = @(
   "README.md",
   "KILL_SWITCH.md",
   "VERSION",
-  "control.ps1"
+  "control.ps1",
+  "uninstall.ps1"
 )
 
 foreach ($file in $files) {
@@ -992,6 +993,12 @@ $controlShortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$instal
 $controlShortcut.WorkingDirectory = $installDir
 $controlShortcut.Save()
 
+$uninstallShortcut = $shell.CreateShortcut((Join-Path $desktop "Uninstall $botName.lnk"))
+$uninstallShortcut.TargetPath = "powershell.exe"
+$uninstallShortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$installDir\uninstall.ps1`""
+$uninstallShortcut.WorkingDirectory = $installDir
+$uninstallShortcut.Save()
+
 if ($clientId) {
   Write-Step "Open Discord invite"
   $permissions = 68672
@@ -1004,4 +1011,5 @@ Write-Step "Done"
 Write-Host "Installed to: $installDir"
 Write-Host "Use the desktop shortcut 'Start $botName' to run the bot."
 Write-Host "Use the desktop shortcut 'Control $botName' for kill switch, resume, and status."
+Write-Host "Use the desktop shortcut 'Uninstall $botName' to remove only this bot install."
 Write-Host "If Discord does not show messages, check bot permissions and Message Content Intent in the Discord Developer Portal."
