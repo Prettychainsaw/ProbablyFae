@@ -155,9 +155,9 @@ Recommended approach:
 
 - Each release includes a version number.
 - Each install stores its current version in a local config file.
-- The repo publishes an update manifest listing available versions.
+- The repo publishes an update manifest listing the next valid update step for each supported installed version.
 - Each version may include a migration script for moving from the previous version.
-- Updates apply migrations in order.
+- Updates apply one valid step, then check the manifest again from the newly installed version.
 
 Example:
 
@@ -165,14 +165,29 @@ Example:
 installed: 0.0.1
 latest:    0.0.4
 
+ask manifest:
+what should 0.0.1 download? -> 0.0.2
+
 apply:
 0.0.1 -> 0.0.2
+
+ask manifest again:
+what should 0.0.2 download? -> 0.0.3
+
+apply:
 0.0.2 -> 0.0.3
+
+ask manifest again:
+what should 0.0.3 download? -> 0.0.4
+
+apply:
 0.0.3 -> 0.0.4
 ```
 
-The updater should not skip migration steps unless the manifest explicitly says
-it is safe.
+The updater should not decide its own skipped path. It should repeatedly ask:
+"I am version X; what is my next download?" The manifest may answer with the
+next patch version, a minor-version jump, a major-version jump, or "no supported
+automatic update path."
 
 The update manifest should include enough information for the control app to
 decide the path:
@@ -180,16 +195,29 @@ decide the path:
 ```json
 {
   "latest": "0.0.4",
-  "versions": [
-    {
-      "version": "0.0.2",
-      "from": "0.0.1",
+  "next": {
+    "0.0.1": {
+      "to": "0.0.2",
       "downloadUrl": "https://github.com/Prettychainsaw/ProbablyFae/releases/download/v0.0.2/ProbablyFae-Setup.exe",
       "migration": "migrations/0.0.1-to-0.0.2.js",
       "requiresRestart": true,
       "notes": "Adds kill switch support."
+    },
+    "0.0.2": {
+      "to": "0.0.3",
+      "downloadUrl": "https://github.com/Prettychainsaw/ProbablyFae/releases/download/v0.0.3/ProbablyFae-Setup.exe",
+      "migration": "migrations/0.0.2-to-0.0.3.js",
+      "requiresRestart": true,
+      "notes": "Fixes idle behavior."
+    },
+    "0.0.3": {
+      "to": "0.1.0",
+      "downloadUrl": "https://github.com/Prettychainsaw/ProbablyFae/releases/download/v0.1.0/ProbablyFae-Setup.exe",
+      "migration": "migrations/0.0.3-to-0.1.0.js",
+      "requiresRestart": true,
+      "notes": "First minor release."
     }
-  ]
+  }
 }
 ```
 
