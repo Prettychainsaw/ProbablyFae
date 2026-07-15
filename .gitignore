@@ -4,6 +4,8 @@
 state.json
 node_modules/
 FAYE_KILL_SWITCH
+bot.pid
+dist/
 
 # Bot-owned private runtime memory and copied user content.
 knowledge/
