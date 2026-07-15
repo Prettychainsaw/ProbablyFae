@@ -86,7 +86,16 @@ function Get-DiscordChannelInfo($discordToken, $channelId) {
       -Headers $headers `
       -Method Get
   } catch {
-    Write-Host "Could not verify channel ID $channelId with Discord: $($_.Exception.Message)" -ForegroundColor Yellow
+    $statusCode = $null
+    try { $statusCode = [int]$_.Exception.Response.StatusCode } catch {}
+    if ($statusCode -eq 403) {
+      Write-Host "Could not verify channel ID ${channelId}: Discord returned 403 Forbidden." -ForegroundColor Yellow
+      Write-Host "That usually means this bot has not been invited to that server yet, or it lacks View Channel / Read Message History for that channel." -ForegroundColor Yellow
+    } elseif ($statusCode -eq 404) {
+      Write-Host "Could not verify channel ID ${channelId}: Discord returned 404 Not Found. Check that you copied the channel ID, not the server ID or message ID." -ForegroundColor Yellow
+    } else {
+      Write-Host "Could not verify channel ID $channelId with Discord: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
     return $null
   }
 }
@@ -124,6 +133,21 @@ function Confirm-DiscordChannels($discordToken) {
       return ($ids -join ',')
     }
   }
+}
+
+function Open-DiscordInvite($clientId) {
+  if ([string]::IsNullOrWhiteSpace($clientId)) {
+    Write-Host "No application/client ID entered, so the installer cannot open the invite URL." -ForegroundColor Yellow
+    Write-Host "Channel verification will only work if the bot has already been invited to the server and can see the channel." -ForegroundColor Yellow
+    return
+  }
+
+  Write-Step "Open Discord invite"
+  $permissions = 68672
+  $invite = "https://discord.com/oauth2/authorize?client_id=$clientId&permissions=$permissions&scope=bot"
+  Start-Process $invite
+  Write-Host "Approve the Discord invite in your browser, choose the target server, and make sure the bot can see the target channel."
+  Read-Host "Press Enter here after the bot has joined the server"
 }
 
 function Prepare-InstallDirectory($installDir, $botName) {
@@ -887,15 +911,16 @@ Show-InputHelp `
   "Before testing replies, enable Developer Portal -> your application -> Bot -> Privileged Gateway Intents -> Message Content Intent. Without it, the bot may see messages but not understand what people typed." `
   "https://discord.com/developers/applications"
 Show-InputHelp `
+  "Discord application/client ID" `
+  "Use the Application ID from Developer Portal -> your application -> General Information. The installer opens an invite URL from this so the bot can join the server before channel validation." `
+  "https://discord.com/developers/applications"
+$clientId = Read-Host "Discord application/client ID, used to open invite URL"
+Open-DiscordInvite $clientId
+Show-InputHelp `
   "Discord channel ID" `
   "Turn on Discord Developer Mode, right-click the target channel, then Copy Channel ID. The bot will watch this channel. You can paste multiple channel IDs separated by commas." `
   "https://support.discord.com/hc/en-us/articles/206346498"
 $channelIds = Confirm-DiscordChannels $discordToken
-Show-InputHelp `
-  "Discord application/client ID" `
-  "Use the Application ID from Developer Portal -> your application -> General Information. This is only used to open the bot invite URL." `
-  "https://discord.com/developers/applications"
-$clientId = Read-Host "Discord application/client ID, used to open invite URL"
 Show-InputHelp `
   "Optional trigger role IDs" `
   "If you want a Discord role mention to trigger the bot, enable Developer Mode, right-click the role, and copy its ID. Leave blank if you do not need role-triggered replies." `
@@ -998,14 +1023,6 @@ $uninstallShortcut.TargetPath = "powershell.exe"
 $uninstallShortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$installDir\uninstall.ps1`""
 $uninstallShortcut.WorkingDirectory = $installDir
 $uninstallShortcut.Save()
-
-if ($clientId) {
-  Write-Step "Open Discord invite"
-  $permissions = 68672
-  $invite = "https://discord.com/oauth2/authorize?client_id=$clientId&permissions=$permissions&scope=bot"
-  Start-Process $invite
-  Write-Host "Approve the Discord invite in your browser."
-}
 
 Write-Step "Done"
 Write-Host "Installed to: $installDir"
