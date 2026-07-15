@@ -73,28 +73,27 @@ function Ensure-Ollama {
 }
 
 function Select-BotName {
-  $adjectives = @("Moth", "Ash", "Velvet", "Static", "Wicked", "Moon", "Thorn", "Vesper", "Hex", "Sable")
-  $nouns = @("Fae", "Mara", "Lark", "Nyx", "Vex", "Rune", "Iris", "Luna", "Mina", "Echo")
+  $names = @(
+    "Ash", "Bloom", "Briar", "Cinder", "Clove", "Echo", "Fable", "Fae",
+    "Hex", "Iris", "Lark", "Lemon", "Luna", "Mara", "Mina", "Moth",
+    "Nyx", "Rune", "Sable", "Static", "Thorn", "Vesper", "Vex", "Wisp"
+  )
 
   while ($true) {
-    $choices = 1..3 | ForEach-Object {
-      "$($adjectives | Get-Random)$($nouns | Get-Random)"
-    }
+    $choices = $names | Get-Random -Count 3
     Write-Host ""
     Write-Host "Pick a bot name, or choose 4 for three more."
     for ($i = 0; $i -lt $choices.Count; $i++) {
       Write-Host "$($i + 1). $($choices[$i])"
     }
     Write-Host "4. None of these"
-    Write-Host "5. Type my own"
     $pick = Read-Host "Choice"
     switch ($pick) {
       "1" { return $choices[0] }
       "2" { return $choices[1] }
       "3" { return $choices[2] }
       "4" { continue }
-      "5" { return (Read-Required "Bot name") }
-      default { Write-Host "Pick 1-5." -ForegroundColor Yellow }
+      default { Write-Host "Pick 1-4." -ForegroundColor Yellow }
     }
   }
 }
