@@ -320,6 +320,30 @@ The kill switch must:
 - block direct replies
 - block scheduled checks
 
+## Installer Packaging
+
+The preferred public download is one executable bootstrap installer:
+
+```text
+ProbablyFae-Setup.exe
+```
+
+That executable should be small. It should not need to bundle every runtime file
+forever. Its main job is:
+
+- contact `https://github.com/Prettychainsaw/ProbablyFae`
+- download the current install manifest
+- download the correct installer payload/release assets
+- verify that the required files arrived
+- then run the local install flow
+
+This keeps old downloaded installers useful. If someone downloads an older
+bootstrapper, it can still ask GitHub what the current install payload is before
+installing.
+
+If GitHub is unreachable, the bootstrapper should fail clearly and not install a
+half-current bot.
+
 ## Generated Files
 
 The installer should create:

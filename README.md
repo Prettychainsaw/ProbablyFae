@@ -19,7 +19,22 @@ Do not commit `.env`, runtime logs, state files, or private knowledge/books.
 
 ## Alpha Installer
 
-Build the current Windows self-extracting installer:
+Build the small Windows bootstrap installer:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\bootstrap\build-bootstrap.ps1
+```
+
+The generated file is:
+
+```text
+dist\ProbablyFae-Bootstrap.exe
+```
+
+The bootstrapper downloads `latest.json` from GitHub, then downloads and runs
+the current installer payload from the release listed there.
+
+Build the current bundled installer payload:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\installer\build-installer.ps1

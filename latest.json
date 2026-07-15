@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "latest": "0.0.1",
+  "bootstrap": {
+    "minimumSupported": "0.0.1"
+  },
+  "install": {
+    "version": "0.0.1",
+    "releaseUrl": "https://github.com/Prettychainsaw/ProbablyFae/releases/tag/v0.0.1",
+    "assetUrl": "https://github.com/Prettychainsaw/ProbablyFae/releases/download/v0.0.1/ProbablyFae-Setup.exe",
+    "notes": "Alpha installer. Still Faye-shaped internally and intended for prototype testing."
+  },
+  "next": {}
+}
