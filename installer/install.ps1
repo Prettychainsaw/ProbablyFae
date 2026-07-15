@@ -91,8 +91,35 @@ function Get-OllamaExe {
   return $null
 }
 
+function Get-NodeExe {
+  $cmd = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($cmd) { return [string]$cmd.Source }
+
+  $machine = "C:\Program Files\nodejs\node.exe"
+  if (Test-Path $machine) { return [string]$machine }
+
+  $local = Join-Path $env:LOCALAPPDATA "Programs\nodejs\node.exe"
+  if (Test-Path $local) { return [string]$local }
+
+  return $null
+}
+
+function Get-NpmCmd {
+  $cmd = Get-Command npm.cmd -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($cmd) { return [string]$cmd.Source }
+
+  $machine = "C:\Program Files\nodejs\npm.cmd"
+  if (Test-Path $machine) { return [string]$machine }
+
+  $local = Join-Path $env:LOCALAPPDATA "Programs\nodejs\npm.cmd"
+  if (Test-Path $local) { return [string]$local }
+
+  return $null
+}
+
 function Ensure-Node {
-  if (Get-Command node.exe -ErrorAction SilentlyContinue) { return }
+  $node = Get-NodeExe
+  if ($node) { return [string]$node }
 
   Write-Step "Node.js is missing"
   Show-InputHelp `
@@ -107,9 +134,11 @@ function Ensure-Node {
   Invoke-VisibleCommand `
     "Installing Node.js LTS" `
     "winget install --id OpenJS.NodeJS.LTS --source winget --accept-package-agreements --accept-source-agreements" | Out-Null
-  if (-not (Get-Command node.exe -ErrorAction SilentlyContinue)) {
-    throw "Node.js was installed, but this PowerShell session cannot see it yet. Open a new terminal and run the installer again."
+  $node = Get-NodeExe
+  if (-not $node) {
+    throw "Node.js was installed, but this installer cannot find node.exe. Open a new terminal and run the installer again."
   }
+  return [string]$node
 }
 
 function Ensure-Ollama {
@@ -781,7 +810,11 @@ Show-InputHelp `
 $triggerRoles = Read-Host "Optional trigger role IDs, comma-separated"
 
 Write-Step "Dependencies"
-Ensure-Node
+$nodeExe = Ensure-Node
+$npmCmd = Get-NpmCmd
+if (-not $npmCmd) {
+  throw "Node.js is installed, but this installer cannot find npm.cmd. Open a new terminal and run the installer again."
+}
 $ollama = Ensure-Ollama
 $model = Select-Model $ollama
 
@@ -839,14 +872,14 @@ Set-Content -Path (Join-Path $installDir ".env") -Value $envText -Encoding UTF8
 $startCmd = @"
 @echo off
 cd /d "%~dp0"
-node bot.js >> bot-runtime.log 2>> bot-runtime.err.log
+"$nodeExe" bot.js >> bot-runtime.log 2>> bot-runtime.err.log
 "@
 Set-Content -Path (Join-Path $installDir "START_BOT.cmd") -Value $startCmd -Encoding ASCII
 
 Write-Step "Install Node dependencies"
 Push-Location $installDir
 try {
-  npm.cmd install --omit=dev
+  & $npmCmd install --omit=dev
 } finally {
   Pop-Location
 }
