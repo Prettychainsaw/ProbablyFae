@@ -74,9 +74,13 @@ function Ensure-Ollama {
 
 function Select-BotName {
   $names = @(
-    "Ash", "Bloom", "Briar", "Cinder", "Clove", "Echo", "Fable", "Fae",
-    "Hex", "Iris", "Lark", "Lemon", "Luna", "Mara", "Mina", "Moth",
-    "Nyx", "Rune", "Sable", "Static", "Thorn", "Vesper", "Vex", "Wisp"
+    "Ada", "Alma", "Ash", "Basil", "Bloom", "Briar", "Cal", "Casey",
+    "Cinder", "Clove", "Davis", "Echo", "Eli", "Fable", "Fae", "Finn",
+    "Grey", "Harper", "Hex", "Iris", "Jules", "June", "Kit", "Lark",
+    "Lemon", "Lena", "Luna", "Mara", "Mina", "Moth", "Nell", "Nyx",
+    "Penny", "Pledge", "Quinn", "Remy", "Riley", "Rowan", "Rune",
+    "Sable", "Sally", "Sam", "Static", "Tess", "Thorn", "Tim",
+    "Vesper", "Vex", "Wisp"
   )
 
   while ($true) {
