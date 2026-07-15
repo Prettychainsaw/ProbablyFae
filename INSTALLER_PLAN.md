@@ -139,6 +139,75 @@ The runtime control app should expose two separate update checks:
 These should be separate buttons or clearly separate sections. A user may want
 new bot code without changing models, or a new model without changing bot code.
 
+## Versioning And Migrations
+
+Use explicit app/runtime versions, such as:
+
+- `0.0.1`
+- `0.0.2`
+- `0.0.3`
+
+Do not rely on "latest overwrites everything" for installed bots. Installed
+bots may have local state, knowledge, personality files, pending tasks, model
+choices, and user-edited config. Updates need to move that state deliberately.
+
+Recommended approach:
+
+- Each release includes a version number.
+- Each install stores its current version in a local config file.
+- The repo publishes an update manifest listing available versions.
+- Each version may include a migration script for moving from the previous version.
+- Updates apply migrations in order.
+
+Example:
+
+```text
+installed: 0.0.1
+latest:    0.0.4
+
+apply:
+0.0.1 -> 0.0.2
+0.0.2 -> 0.0.3
+0.0.3 -> 0.0.4
+```
+
+The updater should not skip migration steps unless the manifest explicitly says
+it is safe.
+
+The update manifest should include enough information for the control app to
+decide the path:
+
+```json
+{
+  "latest": "0.0.4",
+  "versions": [
+    {
+      "version": "0.0.2",
+      "from": "0.0.1",
+      "downloadUrl": "https://github.com/Prettychainsaw/ProbablyFae/releases/download/v0.0.2/ProbablyFae-Setup.exe",
+      "migration": "migrations/0.0.1-to-0.0.2.js",
+      "requiresRestart": true,
+      "notes": "Adds kill switch support."
+    }
+  ]
+}
+```
+
+If the installed version is too old or the migration path is missing, the
+control app should stop and tell the user to install manually or ask for help.
+
+Before applying code updates:
+
+- set the kill switch
+- stop the running bot process
+- back up config, knowledge notes, personality files, state, and logs
+- apply each migration in order
+- restart only after the full update path succeeds
+
+Model updates are separate. A model update may download a new Ollama model and
+change the configured model, but it should not run app migrations unless the app
+itself is also being updated.
+
 ## Discord Setup
 
 The installer can create/open the OAuth invite URL, but the user must complete Discord's authorization page.
