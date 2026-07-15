@@ -3766,6 +3766,17 @@ client.once('ready', () => {
   console.log(`${BOT_NAME} is online as ${client.user.tag}`);
   const configuredChannelIds = getScheduledChannelIds();
   console.log(`Scheduled checks enabled for ${configuredChannelIds.length} channel${configuredChannelIds.length === 1 ? '' : 's'}: ${configuredChannelIds.join(', ') || '(none)'}`);
+  for (const channelId of configuredChannelIds) {
+    getChannel(channelId)
+      .then((channel) => {
+        const name = channel.name ? `#${channel.name}` : '(unnamed text channel)';
+        const guildName = channel.guild?.name || '(no guild)';
+        console.log(`Configured channel ${channelId}: ${name} in ${guildName}`);
+      })
+      .catch((err) => {
+        console.error(`Configured channel ${channelId} could not be read:`, err.message);
+      });
+  }
 
   setInterval(() => {
     checkKillSwitch('kill_switch_poll');

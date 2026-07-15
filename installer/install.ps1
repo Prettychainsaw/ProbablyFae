@@ -78,6 +78,54 @@ function Read-SecretPlainText($prompt) {
   }
 }
 
+function Get-DiscordChannelInfo($discordToken, $channelId) {
+  $headers = @{ Authorization = "Bot $discordToken" }
+  try {
+    return Invoke-RestMethod `
+      -Uri "https://discord.com/api/v10/channels/$channelId" `
+      -Headers $headers `
+      -Method Get
+  } catch {
+    Write-Host "Could not verify channel ID $channelId with Discord: $($_.Exception.Message)" -ForegroundColor Yellow
+    return $null
+  }
+}
+
+function Confirm-DiscordChannels($discordToken) {
+  while ($true) {
+    $rawChannelIds = Read-Required "Discord channel ID to watch"
+    $ids = $rawChannelIds -split '[,\s]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+    if ($ids.Count -eq 0) {
+      Write-Host "Enter at least one channel ID." -ForegroundColor Yellow
+      continue
+    }
+
+    Write-Host ""
+    Write-Host "Verifying Discord channel IDs..." -ForegroundColor Cyan
+    $allVerified = $true
+    foreach ($id in $ids) {
+      $info = Get-DiscordChannelInfo $discordToken $id
+      if (-not $info) {
+        $allVerified = $false
+        continue
+      }
+      $name = if ($info.name) { "#$($info.name)" } else { "(no channel name returned)" }
+      $guild = if ($info.guild_id) { $info.guild_id } else { "(DM or no guild ID returned)" }
+      Write-Host "- $id -> $name, type=$($info.type), guild=$guild"
+    }
+
+    if (-not $allVerified) {
+      $answer = Read-Host "One or more channels could not be verified. Re-enter channel IDs? (Y/n)"
+      if ($answer -notmatch '^(n|no)$') { continue }
+    }
+
+    $answer = Read-Host "Use these channel IDs? (Y/n)"
+    if ($answer -notmatch '^(n|no)$') {
+      return ($ids -join ',')
+    }
+  }
+}
+
 function Get-OllamaExe {
   $cmd = Get-Command ollama.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
   if ($cmd) { return [string]$cmd.Source }
@@ -794,10 +842,14 @@ Show-InputHelp `
   "https://discord.com/developers/applications"
 $discordToken = Read-SecretPlainText "Discord bot token"
 Show-InputHelp `
+  "Message Content Intent" `
+  "Before testing replies, enable Developer Portal -> your application -> Bot -> Privileged Gateway Intents -> Message Content Intent. Without it, the bot may see messages but not understand what people typed." `
+  "https://discord.com/developers/applications"
+Show-InputHelp `
   "Discord channel ID" `
   "Turn on Discord Developer Mode, right-click the target channel, then Copy Channel ID. The bot will watch this channel. You can paste multiple channel IDs separated by commas." `
   "https://support.discord.com/hc/en-us/articles/206346498"
-$channelIds = Read-Required "Discord channel ID to watch"
+$channelIds = Confirm-DiscordChannels $discordToken
 Show-InputHelp `
   "Discord application/client ID" `
   "Use the Application ID from Developer Portal -> your application -> General Information. This is only used to open the bot invite URL." `
