@@ -189,6 +189,13 @@ The updater should not decide its own skipped path. It should repeatedly ask:
 next patch version, a minor-version jump, a major-version jump, or "no supported
 automatic update path."
 
+The updater keeps doing this until one of these is true:
+
+- installed version equals `latest`
+- the manifest says there is no next update for the installed version
+- an update or migration fails
+- the user cancels before approving the next step
+
 The update manifest should include enough information for the control app to
 decide the path:
 
