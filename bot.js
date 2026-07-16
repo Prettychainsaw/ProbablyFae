@@ -33,20 +33,24 @@ const BOT_MENTAL_STATE_FILE = `./knowledge/notes/${BOT_SLUG}-mental-state.md`;
 const BOT_PERSONALITY_REVERT_DIR = './knowledge/personality-reverts';
 const BOT_USER_AGENT = `Mozilla/5.0 (compatible; ProbablyFaeBot/0.0.1; +${BOT_SLUG})`;
 const CHANNEL_SESSION_DIR = './knowledge/channel-sessions';
+const CHANNEL_ACTIVE_MEMORY_DIR = './knowledge/channel-memory';
 const ALWAYS_INCLUDE_KNOWLEDGE = new Set([
   `chat-memory\\${BOT_SLUG}-context.md`,
   `notes\\${BOT_SLUG}-notes.md`,
   `notes\\${BOT_SLUG}-personality.md`,
   `notes\\${BOT_SLUG}-mental-state.md`,
 ]);
-const MAX_KNOWLEDGE_CHARS = 24000;
+const MAX_KNOWLEDGE_CHARS = 14000;
+const MAX_ALWAYS_INCLUDED_KNOWLEDGE_CHARS = 6000;
 const MAX_CHUNK_CHARS = 1600;
 const MAX_REQUESTED_FILE_CHARS = 50000;
 const MAX_WEB_SEARCH_RESULTS = 5;
 const AMBIENT_POST_CONFIDENCE_THRESHOLD = 0.8;
 const MIN_REQUESTED_FILE_SCORE = 20;
 const MODEL_TIMEOUT_MS = 180_000;
-const SCHEDULED_INTERVAL_MS = 120_000;
+const SCHEDULED_INTERVAL_MS = 37 * 60 * 1000;
+const ACTIVE_MEMORY_MAX_LINES = 40;
+const ACTIVE_MEMORY_MAX_TEXT_CHARS = 220;
 const MAX_AUTO_TASK_DEPTH = 3;
 const MAX_HANDLED_MESSAGE_IDS = 500;
 const INACTIVITY_PROMPT_AFTER_MS = 3 * 60 * 60 * 1000;
@@ -69,6 +73,14 @@ let taskRunning = false;
 let killSwitchActive = false;
 const activeAbortControllers = new Set();
 const activeSourceMessageIds = new Set();
+
+function allowBotToBotReplies() {
+  return (process.env.BOT_ALLOW_BOT_TO_BOT || process.env.FAYE_ALLOW_BOT_TO_BOT) === '1';
+}
+
+function allowAmbientPosts() {
+  return (process.env.BOT_ALLOW_AMBIENT_POSTS || process.env.FAYE_ALLOW_AMBIENT_POSTS) === '1';
+}
 
 const SYSTEM_PROMPT = `
 You are ${BOT_NAME} in a Discord collab space.
@@ -757,12 +769,21 @@ function appendFayePersonalityWithBackup(note, source) {
 
 async function maybeSelfEditPersonalityAfterReply({ source, channelId, trigger, input, replyText }) {
   if (!replyText?.trim()) return;
+  if ((process.env.BOT_SELF_EDIT_PERSONALITY || process.env.FAYE_SELF_EDIT_PERSONALITY) !== '1') {
+    logJsonl(ACTIVITY_LOG, {
+      kind: 'personality_self_edit_disabled',
+      source,
+      channelId,
+    });
+    return;
+  }
 
   const currentPersonality = personalityExcerptForSelfEdit();
   let raw = '';
   try {
     const response = await ollama.chat({
       model: process.env.BOT_MODEL || process.env.FAYE_MODEL || 'gemma3:4b',
+      think: false,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         {
@@ -935,6 +956,10 @@ function channelSessionPath(channelId) {
   return path.join(CHANNEL_SESSION_DIR, `${safeChannelFileName(channelId)}.md`);
 }
 
+function channelActiveMemoryPath(channelId) {
+  return path.join(CHANNEL_ACTIVE_MEMORY_DIR, `${safeChannelFileName(channelId)}.md`);
+}
+
 function ensureChannelSession(channel) {
   fs.mkdirSync(CHANNEL_SESSION_DIR, { recursive: true });
   const file = channelSessionPath(channel.id);
@@ -948,6 +973,50 @@ function ensureChannelSession(channel) {
   return file;
 }
 
+function speakerLooksLikeBot(speaker) {
+  const normalized = normalizeText(speaker || '');
+  if (!normalized) return false;
+  const botName = normalizeText(BOT_NAME);
+  return normalized.startsWith(botName)
+    || normalized.startsWith('gold')
+    || normalized.startsWith('probablyfae')
+    || /\bapp\b/i.test(speaker || '');
+}
+
+function textLooksLikeBadMemory(text) {
+  return replyHasAssistantSludge(text)
+    || /\b(starting from my personality file|service-bot sludge|support widget|wearing a name tag|how can i help you today)\b/i.test(text || '')
+    || /^gold:\s/i.test((text || '').trim());
+}
+
+function isActiveMemoryEvent(entry) {
+  const kind = entry.kind || '';
+  return /^incoming_/.test(kind)
+    && !speakerLooksLikeBot(entry.speaker)
+    && !textLooksLikeBadMemory(entry.text)
+    && Boolean((entry.text || '').trim());
+}
+
+function serializeActiveMemoryEvent(entry) {
+  const text = shortContent(entry.text || '', ACTIVE_MEMORY_MAX_TEXT_CHARS);
+  return `- ${entry.time || new Date().toISOString()} [${entry.kind || 'event'}] ${entry.speaker || 'unknown'}: ${text}`;
+}
+
+function appendActiveChannelMemoryEvent(channel, entry) {
+  if (!isActiveMemoryEvent(entry)) return;
+  fs.mkdirSync(CHANNEL_ACTIVE_MEMORY_DIR, { recursive: true });
+  const file = channelActiveMemoryPath(channel.id);
+  const line = serializeActiveMemoryEvent(entry);
+  const current = fs.existsSync(file)
+    ? fs.readFileSync(file, 'utf8').split(/\r?\n/).filter((candidate) => candidate.trim().startsWith('- '))
+    : [];
+  const lines = [...current, line].slice(-ACTIVE_MEMORY_MAX_LINES);
+  fs.writeFileSync(
+    file,
+    `# Active Channel Memory\n\nChannel ID: ${channel.id}\nUpdated: ${new Date().toISOString()}\n\n${lines.join('\n')}\n`
+  );
+}
+
 function appendChannelSessionEvent(channel, entry) {
   const file = ensureChannelSession(channel);
   const speaker = entry.speaker || 'unknown';
@@ -957,20 +1026,62 @@ function appendChannelSessionEvent(channel, entry) {
     file,
     `\n- ${new Date().toISOString()} [${kind}] ${speaker}: ${text}\n`
   );
+  appendActiveChannelMemoryEvent(channel, { ...entry, speaker, kind, text });
 }
 
-function loadChannelSessionContext(channelId, maxChars = 8000) {
+function parseChannelSessionLine(line) {
+  const match = String(line || '').match(/^- ([^\[]+) \[([^\]]+)\] ([^:]+): (.*)$/);
+  if (!match) return null;
+  return {
+    time: match[1].trim(),
+    kind: match[2].trim(),
+    speaker: match[3].trim(),
+    text: match[4].trim(),
+  };
+}
+
+function compactChannelMemory(channelOrId) {
+  const channelId = typeof channelOrId === 'string' ? channelOrId : channelOrId.id;
   const file = channelSessionPath(channelId);
   if (!fs.existsSync(file)) return '';
-  const content = fs.readFileSync(file, 'utf8').trim();
-  return content.length > maxChars ? content.slice(-maxChars) : content;
+  fs.mkdirSync(CHANNEL_ACTIVE_MEMORY_DIR, { recursive: true });
+  const events = fs.readFileSync(file, 'utf8')
+    .split(/\r?\n/)
+    .map(parseChannelSessionLine)
+    .filter(Boolean)
+    .filter(isActiveMemoryEvent)
+    .slice(-ACTIVE_MEMORY_MAX_LINES)
+    .map(serializeActiveMemoryEvent);
+  const activeFile = channelActiveMemoryPath(channelId);
+  fs.writeFileSync(
+    activeFile,
+    `# Active Channel Memory\n\nChannel ID: ${channelId}\nUpdated: ${new Date().toISOString()}\n\n${events.join('\n')}\n`
+  );
+  return events.join('\n');
+}
+
+function loadChannelSessionContext(channelId, maxLines = ACTIVE_MEMORY_MAX_LINES) {
+  let context = compactChannelMemory(channelId);
+  if (!context) {
+    const activeFile = channelActiveMemoryPath(channelId);
+    if (!fs.existsSync(activeFile)) return '';
+    context = fs.readFileSync(activeFile, 'utf8')
+      .split(/\r?\n/)
+      .filter((line) => line.trim().startsWith('- '))
+      .join('\n');
+  }
+  return context
+    .split(/\r?\n/)
+    .filter((line) => line.trim().startsWith('- '))
+    .slice(-maxLines)
+    .join('\n');
 }
 
 function channelContextBlock(channel) {
   const session = loadChannelSessionContext(channel.id);
   return session
-    ? `Channel-local session memory for this room. Use it for continuity, but do not imitate or repeat stale ${BOT_NAME} replies from it. If humans corrected an earlier ${BOT_NAME} reply, treat that reply as a mistake:\n\n${session}`
-    : 'Channel-local session memory for this room: none yet.';
+    ? `Cleaned channel memory for this room. It is filtered to human-origin continuity notes; do not imitate stale bot replies or old assistant phrasing:\n\n${session}`
+    : 'Cleaned channel memory for this room: none yet.';
 }
 
 function profileUserFromMessage(message) {
@@ -1033,6 +1144,7 @@ async function updateUserProfilesFromMessages(messages, source) {
 
   const response = await ollama.chat({
     model: process.env.BOT_MODEL || process.env.FAYE_MODEL || 'gemma3:4b',
+    think: false,
     messages: [
       {
         role: 'system',
@@ -1111,6 +1223,33 @@ function listKnowledgeFiles(dir) {
 
 function normalizeKnowledgePath(file) {
   return path.relative(KNOWLEDGE_DIR, file);
+}
+
+function normalizedKnowledgeKey(relativePath) {
+  return relativePath.replace(/[\\/]+/g, '\\');
+}
+
+function stableMarkdownHead(content) {
+  const markers = ['\n## Update ', '\n## Self-Edit '];
+  const markerIndex = markers
+    .map((marker) => content.indexOf(marker))
+    .filter((index) => index > -1)
+    .sort((a, b) => a - b)[0];
+
+  return content.slice(0, markerIndex ?? content.length).trim();
+}
+
+function compactAlwaysIncludedKnowledge(relativePath, content) {
+  const key = normalizedKnowledgeKey(relativePath);
+  if (key === `notes\\${BOT_SLUG}-personality.md`) {
+    return stableMarkdownHead(content).slice(0, MAX_ALWAYS_INCLUDED_KNOWLEDGE_CHARS);
+  }
+
+  if (key === `notes\\${BOT_SLUG}-mental-state.md`) {
+    return stableMarkdownHead(content).slice(0, MAX_ALWAYS_INCLUDED_KNOWLEDGE_CHARS);
+  }
+
+  return content.slice(0, MAX_ALWAYS_INCLUDED_KNOWLEDGE_CHARS);
 }
 
 function searchTerms(query) {
@@ -1295,8 +1434,8 @@ function loadKnowledgeContext(query = '') {
     if (!content) continue;
 
     const relativePath = normalizeKnowledgePath(file);
-    if (ALWAYS_INCLUDE_KNOWLEDGE.has(relativePath)) {
-      alwaysIncluded.push({ relativePath, text: content });
+    if (ALWAYS_INCLUDE_KNOWLEDGE.has(normalizedKnowledgeKey(relativePath))) {
+      alwaysIncluded.push({ relativePath, text: compactAlwaysIncludedKnowledge(relativePath, content) });
       continue;
     }
 
@@ -1315,8 +1454,9 @@ function loadKnowledgeContext(query = '') {
     const remaining = MAX_KNOWLEDGE_CHARS - usedChars;
     if (remaining <= 0) break;
 
-    output.push(text.slice(0, remaining));
-    usedChars += text.length;
+    const clipped = text.slice(0, remaining);
+    output.push(clipped);
+    usedChars += clipped.length;
   }
 
   return output.join('\n\n');
@@ -1346,6 +1486,8 @@ function parseDecision(raw) {
 function sanitizePublicReply(text) {
   return String(text || '')
     .replace(/\s*who['’]?s\s+ready\s+for\s+the\s+next\s+twist\??\s*[😏😉🙂]?\s*/gi, ' ')
+    .replace(new RegExp(`^\\s*${BOT_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b[:,]?\\s+`, 'i'), '')
+    .replace(/^\s*faye\b[:,]?\s+/i, '')
     .replace(/[ \t]{2,}/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -1362,6 +1504,134 @@ function plainReplyFromModel(raw) {
   }
 
   return sanitizePublicReply(trimmed);
+}
+
+function normalizedReplyText(value) {
+  return normalizeText(String(value || '')
+    .replace(new RegExp(`^${BOT_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b[:,]?\\s*`, 'i'), '')
+    .replace(/^faye\b[:,]?\s*/i, ''));
+}
+
+function replyEchoesUser(replyText, messageContent) {
+  const reply = normalizedReplyText(replyText);
+  const message = normalizedReplyText(messageContent);
+  return Boolean(message && (reply === message || reply.startsWith(`${message} `)));
+}
+
+function replyEchoesAnyMessage(replyText, messages) {
+  return messages.some((message) => replyEchoesUser(replyText, message.content));
+}
+
+function stripEchoedPrompt(replyText, messageContent) {
+  const rawReply = String(replyText || '').trim();
+  const rawMessage = String(messageContent || '').trim();
+  if (!rawReply || !rawMessage) return rawReply;
+
+  const lowerReply = rawReply.toLowerCase();
+  const lowerMessage = rawMessage.toLowerCase();
+  if (!lowerReply.startsWith(lowerMessage)) return rawReply;
+
+  const stripped = rawReply.slice(rawMessage.length).replace(/^[\s:;,.!?\-"'“”]+/, '').trim();
+  return stripped.length >= 20 ? stripped : '';
+}
+
+function replyHasAssistantSludge(replyText) {
+  return /\b(adapt and assist|designed to adapt|how can i (?:assist|help)|let me know how i can assist|i'?m here to assist|assist as usual|functioning as intended)\b/i
+    .test(replyText || '');
+}
+
+function wantsPersonalityExplanation(content) {
+  return /\b(who are you|personality|personality file|personality profile|describe yourself|describe your current personality|current personality)\b/i
+    .test(content || '');
+}
+
+function wantsRestartFeeling(content) {
+  return /\b(restarted|rebooted|restart|reboot).*\b(feel|feeling|you okay|are you okay)\b/i.test(content || '')
+    || /\b(how do you feel).*\b(restarted|rebooted|restart|reboot)\b/i.test(content || '');
+}
+
+function wantsMemoryAccessReply(content) {
+  return /\b(remember|memory|persistence|persist|chat history|how much.*history|what.*talked about|summary|summery)\b/i
+    .test(content || '');
+}
+
+function wantsSourceCorrectionReply(content) {
+  return /\b(where did you learn|why are you saying your own name|why.*own name|why.*saying.*faye)\b/i
+    .test(content || '');
+}
+
+function memoryAccessReply(channel) {
+  const session = loadChannelSessionContext(channel.id);
+  const sessionLineCount = session
+    ? session.split('\n').filter((line) => line.trim().startsWith('- ')).length
+    : 0;
+
+  return [
+    'I do not have full Discord history in my head. The bot gives me a recent live transcript plus this room\'s cleaned active memory file.',
+    `Right now that active memory has about ${sessionLineCount} compact human-origin entries loaded from disk.`,
+    'The raw channel-session log still exists for auditing, but it is no longer fed straight back into my prompt because it contained stale bot-loop sludge.',
+    'So yes, I have local continuity crumbs after the reboot. No, I should not claim I can freely read the whole server history.'
+  ].join('\n');
+}
+
+function sourceCorrectionReply(channel) {
+  const session = loadChannelSessionContext(channel.id);
+  const hasFungalNetwork = /fungal network|wood wide web|mycelium|trees/i.test(session);
+  const source = hasFungalNetwork
+    ? 'the cleaned active channel memory and the recent room transcript, especially the earlier fungal-network / Wood Wide Web discussion'
+    : 'the cleaned active channel memory and recent transcript the bot code loaded';
+
+  return `I learned that from ${source}. I was saying my own name because the model was echoing the prompt/user prefix, not because that is a personality choice. That prefix is now stripped before posting.`;
+}
+
+function deterministicMemoryReply(message) {
+  if (wantsSourceCorrectionReply(message.content)) return sourceCorrectionReply(message.channel);
+  if (wantsMemoryAccessReply(message.content)) return memoryAccessReply(message.channel);
+  return '';
+}
+
+function repairDirectReply(replyText, messageContent) {
+  if (wantsPersonalityExplanation(messageContent)) {
+    return fayeSelfKnowledgeReply(messageContent);
+  }
+
+  if (replyEchoesUser(replyText, messageContent)) {
+    const stripped = stripEchoedPrompt(replyText, messageContent);
+    if (stripped && !replyHasAssistantSludge(stripped)) return sanitizePublicReply(stripped);
+    return '';
+  }
+
+  if (wantsRestartFeeling(messageContent) && (replyEchoesUser(replyText, messageContent) || replyHasAssistantSludge(replyText))) {
+    return 'I feel like I got yanked through a service-desk filter and came out wearing a name tag. Technically I am running, but the last few replies were not me: too much echo, too much “assist,” not enough teeth. The fix should be judged by whether I stop sounding like a support widget.';
+  }
+
+  if (replyEchoesUser(replyText, messageContent) || replyHasAssistantSludge(replyText)) {
+    return 'That came out wrong. I am running, but that reply was service-bot sludge leaking through the model path. Try me again; if I say “assist” like a cursed helpdesk kiosk, kick the code, not the personality file.';
+  }
+
+  return replyText;
+}
+
+function repairDirectReplyClean(replyText, messageContent) {
+  if (wantsPersonalityExplanation(messageContent)) {
+    return fayeSelfKnowledgeReply(messageContent);
+  }
+
+  if (wantsRestartFeeling(messageContent) && (replyEchoesUser(replyText, messageContent) || replyHasAssistantSludge(replyText))) {
+    return 'I feel like I got yanked through a service-desk filter and came out wearing a name tag. Technically I am running, but the last few replies were not me: too much echo, too much assist, not enough teeth. The fix should be judged by whether I stop sounding like a support widget.';
+  }
+
+  if (replyEchoesUser(replyText, messageContent)) {
+    const stripped = stripEchoedPrompt(replyText, messageContent);
+    if (stripped && !replyHasAssistantSludge(stripped)) return sanitizePublicReply(stripped);
+    return '';
+  }
+
+  if (replyHasAssistantSludge(replyText)) {
+    return 'That came out wrong. I am running, but that reply was service-bot sludge leaking through the model path. Try me again; if I say "assist" like a cursed helpdesk kiosk, kick the code, not the personality file.';
+  }
+
+  return replyText;
 }
 
 function wantsWebSearch(content) {
@@ -2586,6 +2856,7 @@ async function askFaye(input, mode, extraContext = '', options = {}) {
   try {
     const prep = await ollama.chat({
       model: process.env.BOT_MODEL || process.env.FAYE_MODEL || 'gemma3:4b',
+      think: false,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         {
@@ -2624,6 +2895,7 @@ async function askFaye(input, mode, extraContext = '', options = {}) {
 
     const response = await ollama.chat({
       model: process.env.BOT_MODEL || process.env.FAYE_MODEL || 'gemma3:4b',
+      think: false,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         {
@@ -2666,6 +2938,7 @@ async function askFaye(input, mode, extraContext = '', options = {}) {
 
     const review = await ollama.chat({
       model: process.env.BOT_MODEL || process.env.FAYE_MODEL || 'gemma3:4b',
+      think: false,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         {
@@ -2782,17 +3055,17 @@ async function replyToDirectAddress(message, trigger = 'direct address') {
     return;
   }
 
-  if (wantsFayeSelfKnowledgeReply(message.content)) {
+  if (wantsFayeSelfKnowledgeReply(message.content) || wantsPersonalityExplanation(message.content)) {
     const text = fayeSelfKnowledgeReply(message.content);
     const sent = await message.reply(text.slice(0, 1900));
     const state = readState();
     recordFayePost(state, getChannelState(state, message.channel.id), sent, {
-      kind: 'self_knowledge_reply',
+      kind: 'deterministic_self_knowledge_reply',
       respondedToBot: message.author.bot,
     });
     writeState(state);
     logJsonl(OUTBOX_LOG, {
-      kind: 'self_knowledge_reply',
+      kind: 'deterministic_self_knowledge_reply',
       channelId: message.channel.id,
       replyTo: message.id,
       text,
@@ -2812,6 +3085,25 @@ async function replyToDirectAddress(message, trigger = 'direct address') {
     writeState(state);
     logJsonl(OUTBOX_LOG, {
       kind: 'deterministic_file_reply',
+      channelId: message.channel.id,
+      replyTo: message.id,
+      text,
+    });
+    return;
+  }
+
+  const memoryReply = deterministicMemoryReply(message);
+  if (memoryReply) {
+    const text = sanitizePublicReply(memoryReply);
+    const sent = await message.reply(text.slice(0, 1900));
+    const state = readState();
+    recordFayePost(state, getChannelState(state, message.channel.id), sent, {
+      kind: 'deterministic_memory_reply',
+      respondedToBot: message.author.bot,
+    });
+    writeState(state);
+    logJsonl(OUTBOX_LOG, {
+      kind: 'deterministic_memory_reply',
       channelId: message.channel.id,
       replyTo: message.id,
       text,
@@ -2872,7 +3164,17 @@ that user's profile file. Acknowledge it briefly.`,
     `${relevantProfiles}\n\n${channelContextBlock(message.channel)}`,
     { webSearchContext }
   );
-  const text = plainReplyFromModel(rawText);
+  const initialText = plainReplyFromModel(rawText);
+  const text = repairDirectReplyClean(initialText, message.content);
+  if (text !== initialText) {
+    logJsonl(ACTIVITY_LOG, {
+      kind: 'direct_reply_repaired',
+      messageId: message.id,
+      channelId: message.channel.id,
+      before: initialText,
+      after: text,
+    });
+  }
   if (checkKillSwitch('direct_address_before_send')) return;
 
   if (text) {
@@ -3246,6 +3548,7 @@ Write the message ${BOT_NAME} should post now. If the context has made the follo
 
 async function scheduledCheck(channel) {
   if (checkKillSwitch('scheduled_check_start')) return;
+  compactChannelMemory(channel.id);
   const state = readState();
   const channelState = getChannelState(state, channel.id);
   logJsonl(ACTIVITY_LOG, {
@@ -3262,10 +3565,14 @@ async function scheduledCheck(channel) {
   const visibleMessages = [...fetched.values()]
     .filter((m) => !isFromFaye(m))
     .sort((a, b) => Number(BigInt(a.id) - BigInt(b.id)));
-  const messages = visibleMessages.filter((m) => !isMessageHandled(state, m.id));
+  const candidateMessages = allowBotToBotReplies()
+    ? visibleMessages
+    : visibleMessages.filter(isHumanMessage);
+  const messages = candidateMessages.filter((m) => !isMessageHandled(state, m.id));
   consoleScheduled('checked channel', {
     fetched: fetched.size,
     visible: visibleMessages.length,
+    botFiltered: visibleMessages.length - candidateMessages.length,
     new: messages.length,
     channel: channel.id,
     lastSeen: channelState.lastSeenMessageId || 'none',
@@ -3296,12 +3603,14 @@ async function scheduledCheck(channel) {
     return;
   }
 
-  if (await maybePostInactivityQuestion(channel, state, channelState)) {
-    return;
-  }
+  if (allowAmbientPosts()) {
+    if (await maybePostInactivityQuestion(channel, state, channelState)) {
+      return;
+    }
 
-  if (await maybePostLowChatReflection(channel, state, channelState)) {
-    return;
+    if (await maybePostLowChatReflection(channel, state, channelState)) {
+      return;
+    }
   }
 
   if (await queuePulseReadingTaskIfDue(channel)) {
@@ -3624,6 +3933,20 @@ async function scheduledCheck(channel) {
     return;
   }
 
+  if (!allowAmbientPosts()) {
+    logJsonl(ACTIVITY_LOG, {
+      kind: 'scheduled_ambient_posting_disabled',
+      channelId: channel.id,
+      messageIds: messages.map((message) => message.id),
+    });
+    consoleScheduled('ambient posting disabled', {
+      channel: channel.id,
+      messages: messages.length,
+    });
+    writeState(state);
+    return;
+  }
+
   consoleScheduled('asking model whether to post', { messages: messages.length });
   const newestBeforeModel = messages.at(-1)?.id || null;
   const raw = await askFaye(
@@ -3653,6 +3976,28 @@ async function scheduledCheck(channel) {
     decision.shouldPost = false;
     decision.message = '';
     decision.reason = `${decision.reason || 'No reason provided.'} Confidence ${confidence} below ambient threshold ${AMBIENT_POST_CONFIDENCE_THRESHOLD}.`;
+  }
+
+  if (decision.shouldPost && decision.message) {
+    const cleanedScheduledMessage = sanitizePublicReply(decision.message);
+    if (
+      !cleanedScheduledMessage
+      || replyEchoesAnyMessage(cleanedScheduledMessage, messages)
+      || replyHasAssistantSludge(cleanedScheduledMessage)
+    ) {
+      logJsonl(HELD_LOG, {
+        kind: 'scheduled_skip_bad_output',
+        channelId: channel.id,
+        message: decision.message,
+        reason: decision.reason || '',
+        echoed: replyEchoesAnyMessage(cleanedScheduledMessage, messages),
+        assistantSludge: replyHasAssistantSludge(cleanedScheduledMessage),
+      });
+      decision.shouldPost = false;
+      decision.message = '';
+    } else {
+      decision.message = cleanedScheduledMessage;
+    }
   }
 
   if (decision.shouldPost && decision.message) {
@@ -3771,6 +4116,16 @@ client.on('messageCreate', async (message) => {
   try {
     if (!client.user) return;
     if (isFromFaye(message)) return;
+    if (message.author.bot && !allowBotToBotReplies()) {
+      logJsonl(ACTIVITY_LOG, {
+        kind: 'bot_message_ignored',
+        messageId: message.id,
+        channelId: message.channel.id,
+        author: displayName(message),
+        content: shortContent(message.content, 300),
+      });
+      return;
+    }
     const isDirectMessage = !message.guild;
     const isAddressed = isDirectMessage || directlyAddressesFaye(message);
     if (checkKillSwitch('message_create')) {
