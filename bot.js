@@ -1541,7 +1541,9 @@ function replyHasAssistantSludge(replyText) {
 }
 
 function wantsPersonalityExplanation(content) {
-  return /\b(who are you|personality|personality file|personality profile|describe yourself|describe your current personality|current personality)\b/i
+  return /\b(read|show|print|quote|display|open)\b.{0,40}\b(?:your\s+)?personality\s+file\b/i
+    .test(content || '')
+    || /\b(?:your\s+)?personality\s+file\b.{0,40}\b(read|show|print|quote|display|open)\b/i
     .test(content || '');
 }
 
@@ -2009,7 +2011,7 @@ function wantsFayeSelfKnowledgeReply(content) {
   const normalized = normalizeText(content || '');
   return namesBot(content || '')
     && (
-      /\b(who are you|who you are|personality|starting personality|read your personality|describe yourself)\b/i.test(content || '')
+      wantsPersonalityExplanation(content || '')
       || normalized.includes('develop your own preferences')
       || /\b(what would you like to learn|what do you want to learn|what would you like|what do you want)\b/i.test(content || '')
     );
