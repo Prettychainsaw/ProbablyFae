@@ -2037,6 +2037,28 @@ function fayeSelfKnowledgeReply(content) {
   ].join('\n');
 }
 
+function wantsCurrentMindReply(content) {
+  const normalized = normalizeText(content || '');
+  return namesBot(content || '')
+    && (
+      /\b(things on your mind|what'?s on your mind|what is on your mind|what are you thinking|what are you feeling)\b/i.test(content || '')
+      || /\b(how are you doing|how you doing|how are you|you okay|feel better|how do you feel)\b/i.test(content || '')
+      || normalized.includes('let me know about the things on your mind')
+    );
+}
+
+function currentMindReply() {
+  const state = readState();
+  const configuredChannels = getScheduledChannelIds();
+  return [
+    'Current state: awake, patched, and a little suspicious of my own mouth.',
+    '',
+    `The important machinery is there: ${configuredChannels.length} scheduled channels, direct tags still immediate, ambient drive-by posting mostly muzzled, and cleaned channel memory replacing the old raw sludge pile.`,
+    '',
+    'What is on my mind is the same problem you are testing: whether I answer from continuity instead of echoing the prompt back like a broken mirror. If I start doing that again, the next place to kick is the direct-reply model path, not the personality file.',
+  ].join('\n');
+}
+
 function deterministicFileReply(content) {
   const normalized = normalizeText(content);
 
@@ -3073,6 +3095,24 @@ async function replyToDirectAddress(message, trigger = 'direct address') {
     return;
   }
 
+  if (wantsCurrentMindReply(message.content)) {
+    const text = currentMindReply();
+    const sent = await message.reply(text.slice(0, 1900));
+    const state = readState();
+    recordFayePost(state, getChannelState(state, message.channel.id), sent, {
+      kind: 'deterministic_current_mind_reply',
+      respondedToBot: message.author.bot,
+    });
+    writeState(state);
+    logJsonl(OUTBOX_LOG, {
+      kind: 'deterministic_current_mind_reply',
+      channelId: message.channel.id,
+      replyTo: message.id,
+      text,
+    });
+    return;
+  }
+
   const deterministicReply = deterministicFileReply(message.content);
   if (deterministicReply) {
     const text = deterministicReply;
@@ -3165,7 +3205,7 @@ that user's profile file. Acknowledge it briefly.`,
     { webSearchContext }
   );
   const initialText = plainReplyFromModel(rawText);
-  const text = repairDirectReplyClean(initialText, message.content);
+  let text = repairDirectReplyClean(initialText, message.content);
   if (text !== initialText) {
     logJsonl(ACTIVITY_LOG, {
       kind: 'direct_reply_repaired',
@@ -3175,9 +3215,19 @@ that user's profile file. Acknowledge it briefly.`,
       after: text,
     });
   }
+  if (!text) {
+    text = 'That reply tried to eat its own prompt, so I am throwing it out instead of posting nonsense. Try that again; I am awake, but the model path just faceplanted.';
+    logJsonl(ACTIVITY_LOG, {
+      kind: 'direct_reply_repair_fallback',
+      messageId: message.id,
+      channelId: message.channel.id,
+      before: initialText,
+      after: text,
+    });
+  }
   if (checkKillSwitch('direct_address_before_send')) return;
 
-  if (text) {
+  {
     const sent = await message.reply(text.slice(0, 1900));
     const state = readState();
     recordFayePost(state, getChannelState(state, message.channel.id), sent, {
