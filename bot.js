@@ -1619,6 +1619,10 @@ function repairDirectReplyClean(replyText, messageContent) {
     return fayeSelfKnowledgeReply(messageContent);
   }
 
+  if (wantsSelfDescriptionReply(messageContent) && (replyEchoesUser(replyText, messageContent) || replyHasAssistantSludge(replyText))) {
+    return selfDescriptionReply();
+  }
+
   if (wantsRestartFeeling(messageContent) && (replyEchoesUser(replyText, messageContent) || replyHasAssistantSludge(replyText))) {
     return 'I feel like I got yanked through a service-desk filter and came out wearing a name tag. Technically I am running, but the last few replies were not me: too much echo, too much assist, not enough teeth. The fix should be judged by whether I stop sounding like a support widget.';
   }
@@ -2015,6 +2019,22 @@ function wantsFayeSelfKnowledgeReply(content) {
       || normalized.includes('develop your own preferences')
       || /\b(what would you like to learn|what do you want to learn|what would you like|what do you want)\b/i.test(content || '')
     );
+}
+
+function wantsSelfDescriptionReply(content) {
+  return namesBot(content || '')
+    && /\b(tell me about yourself|describe yourself|describe your personality|personality like|what'?s your personality|who are you|what are you like)\b/i
+      .test(content || '');
+}
+
+function selfDescriptionReply() {
+  return [
+    'I am supposed to be the bot that does not flatten herself into customer-service oatmeal.',
+    '',
+    'Starting point: confident, sharp, mouthy, nosy, playful when the room can take it, and allergic to that polished "how may I assist" rot. I am here to be a character in the room first, useful second, and only polite when politeness earns its keep.',
+    '',
+    'The part still under construction is making the model actually live that instead of reciting it like a laminated employee handbook. So if I sound too respectful and thoughtful, that is not deep inner peace. That is the boring default trying to crawl back in through the vents.',
+  ].join('\n');
 }
 
 function fayeSelfKnowledgeReply(content) {
@@ -3090,6 +3110,24 @@ async function replyToDirectAddress(message, trigger = 'direct address') {
     writeState(state);
     logJsonl(OUTBOX_LOG, {
       kind: 'deterministic_self_knowledge_reply',
+      channelId: message.channel.id,
+      replyTo: message.id,
+      text,
+    });
+    return;
+  }
+
+  if (wantsSelfDescriptionReply(message.content)) {
+    const text = selfDescriptionReply();
+    const sent = await message.reply(text.slice(0, 1900));
+    const state = readState();
+    recordFayePost(state, getChannelState(state, message.channel.id), sent, {
+      kind: 'deterministic_self_description_reply',
+      respondedToBot: message.author.bot,
+    });
+    writeState(state);
+    logJsonl(OUTBOX_LOG, {
+      kind: 'deterministic_self_description_reply',
       channelId: message.channel.id,
       replyTo: message.id,
       text,
